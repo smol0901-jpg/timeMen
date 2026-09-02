@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   DB, User, Device, ModuleId, Punch, ShiftCell, ShiftType, WorkRequest,
   RequestKind, Settings, PermMatrix, Role,
@@ -93,6 +93,7 @@ export function myNotices(db: DB, me: User) {
 interface StoreApi {
   db: DB;
   me: User | null;
+  online: boolean; // LAN-сервер доступен (данные синхронизируются)
   login: (username: string, password: string) => string | null;
   logout: () => void;
   punch: (source: Punch["source"]) => string | null;
@@ -132,12 +133,68 @@ export function useStore(): StoreApi {
 export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [db, setDb] = useState<DB>(loadDb);
   const [meId, setMeId] = useState<string | null>(() => localStorage.getItem(SES_KEY));
+  const [online, setOnline] = useState(false);
+  const onlineRef = useRef(false);
+  onlineRef.current = online;
+
+  // При запуске подключаемся к LAN-серверу: общая база для всех устройств
+  useEffect(() => {
+    let cancelled = false;
+    const boot = async () => {
+      try {
+        const r = await fetch("./api/db", { cache: "no-store" });
+        if (r.ok) {
+          const d = await r.json();
+          if (!cancelled && d && d.v === 4 && Array.isArray(d.users)) {
+            setDb(d as DB);
+            setOnline(true);
+            return;
+          }
+        } else if (r.status === 404) {
+          // Сервер пуст — инициализируем общей базой из локального хранилища
+          await fetch("./api/db", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(loadDb()),
+          }).catch(() => {});
+          if (!cancelled) setOnline(true);
+          return;
+        }
+      } catch {
+        /* сервер недоступен — локальный режим */
+      }
+      if (!cancelled) setOnline(false);
+    };
+    boot();
+    const t = setInterval(async () => {
+      try {
+        const r = await fetch("./api/ping", { cache: "no-store" });
+        setOnline(r.ok);
+      } catch {
+        setOnline(false);
+      }
+    }, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, []);
 
   useEffect(() => {
     try {
       localStorage.setItem(DB_KEY, JSON.stringify(db));
     } catch {
       console.warn("Хранилище переполнено — фото слишком большие");
+    }
+    if (onlineRef.current) {
+      const t = setTimeout(() => {
+        fetch("./api/db", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(db),
+        }).catch(() => {});
+      }, 500);
+      return () => clearTimeout(t);
     }
   }, [db]);
 
@@ -160,7 +217,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const who = () => me?.name || "система";
 
   const api: StoreApi = {
-    db, me,
+    db, me, online,
     login(username, password) {
       const u = db.users.find((x) => x.username.toLowerCase() === username.trim().toLowerCase());
       if (!u) return "Пользователь не найден";
