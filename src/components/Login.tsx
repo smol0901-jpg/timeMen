@@ -5,7 +5,7 @@ import { useNow, Avatar, I, Logo, OnlineDot, useToast, RoleBadge } from "./ui";
 import { MONTHS, WD_FULL, fmtClock, fmtDurH, nowMin } from "../lib/time";
 
 export default function Login({ onKiosk }: { onKiosk: () => void }) {
-  const { db, login } = useStore();
+  const { db, login, online } = useStore();
   const { toast } = useToast();
   const now = useNow();
   const [sel, setSel] = useState<User | null>(null);
@@ -64,7 +64,7 @@ export default function Login({ onKiosk }: { onKiosk: () => void }) {
           </div>
 
           <div className="mt-auto pt-8 flex items-center justify-between text-[11px] font-bold text-steel-400">
-            <span className="flex items-center gap-2"><I n="wifi" size={14} /> http://192.168.1.7:4000 · Wi-Fi «Proton-Shop»</span>
+            <span className="flex items-center gap-2"><I n="wifi" size={14} /> {online ? <>{window.location.protocol}//<b className="text-paper">{window.location.host}</b></> : "локальный режим (без сервера)"}</span>
             <OnlineDot />
           </div>
         </div>
