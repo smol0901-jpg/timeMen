@@ -1,30 +1,39 @@
 export type Role = "superadmin" | "admin" | "employee";
 export type Device = "desktop" | "mobile";
+export type PayMode = "hour" | "shift" | "piece";
 
 export type ModuleId =
-  | "punch"
-  | "stats"
-  | "schedule"
-  | "requests"
-  | "feed"
-  | "profile"
-  | "dashboard"
-  | "employees"
-  | "reports"
-  | "dataio"
-  | "permissions"
-  | "audit"
-  | "settings";
+  | "punch" | "stats" | "schedule" | "requests" | "feed" | "chat" | "production" | "games" | "profile"
+  | "dashboard" | "employees" | "org" | "reports" | "ai" | "dataio" | "permissions" | "audit" | "reminders" | "settings" | "help";
+
+export interface Workshop {
+  id: string;
+  name: string;
+  piecework: boolean; // сдельная оплата (обвалка и т.п.)
+  color: string;
+}
+
+export interface Position {
+  id: string;
+  name: string;
+  normH: number; // норма часов в день
+  defPay: PayMode;
+  rate: number; // ₽/час
+  shiftCost: number; // ₽/смена
+}
 
 export interface User {
   id: string;
   username: string;
-  password: string; // '' = вход без пароля
+  password: string; // '' = без пароля (устанавливает сам сотрудник)
   name: string;
   role: Role;
-  dept: string;
-  rate: number; // ₽/час
-  avatar: string | null; // dataURL
+  workshopId: string | null;
+  positionId: string | null;
+  payMode: PayMode;
+  rate: number;
+  shiftCost: number;
+  avatar: string | null;
   color: string;
   bio: string;
   active: boolean;
@@ -34,22 +43,81 @@ export interface User {
 export interface Punch {
   id: string;
   userId: string;
-  date: string; // YYYY-MM-DD (дата начала)
-  tin: number; // минуты от полуночи
-  tout: number | null; // null = смена открыта
-  source: "app" | "kiosk" | "admin";
+  date: string;
+  tin: number;
+  tout: number | null;
+  source: "app" | "kiosk" | "admin" | "auto";
+  auto?: "schedule" | "unscheduled" | null;
+  resolution?: "pending" | "ok" | null; // требует подтверждения
 }
 
 export type ShiftType = "day" | "night" | "off" | "vacation" | "sick";
+export interface ShiftCell { userId: string; date: string; type: ShiftType; }
 
-export interface ShiftCell {
-  userId: string;
-  date: string;
-  type: ShiftType;
+export interface Product {
+  id: string;
+  name: string;
+  unit: string; // кг / шт
+  price: number; // ₽ за единицу (ставит админ)
+  workshopId: string | null;
+  hidden: boolean;
+  sort: number;
 }
 
-export type RequestKind = "swap" | "vacation" | "extra";
+export interface ProductionRecord {
+  id: string;
+  userId: string;
+  date: string;
+  productId: string;
+  qty: number;
+  note: string;
+  ts: string;
+}
 
+export interface Attachment { name: string; type: string; size: number; src: string; }
+
+export interface ChatThread {
+  id: string;
+  kind: "dm" | "group";
+  name: string; // для групп
+  workshopId: string | null;
+  members: string[];
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  threadId: string;
+  userId: string;
+  text: string;
+  file: Attachment | null;
+  ts: string;
+}
+
+export interface Reminder {
+  id: string;
+  title: string;
+  text: string;
+  targetType: "all" | "workshop" | "user" | "position";
+  targetId: string | null;
+  due: string;
+  createdBy: string;
+  createdAt: string;
+  doneBy: string[];
+}
+
+export interface ScheduleEvent {
+  id: string;
+  userId: string;
+  ts: string;
+  by: string;
+  changes: { date: string; from: ShiftType | null; to: ShiftType | null }[];
+  comment: string;
+  readBy: string[];
+}
+
+export type RequestKind = "swap" | "vacation" | "extra" | "resolution";
 export interface WorkRequest {
   id: string;
   userId: string;
@@ -62,51 +130,45 @@ export interface WorkRequest {
   createdAt: string;
   decidedBy?: string;
   decisionNote?: string;
+  punchId?: string;
 }
 
-export interface WallComment {
-  id: string;
-  userId: string;
-  text: string;
-  ts: string;
-}
-
+export interface WallComment { id: string; userId: string; text: string; ts: string; }
 export interface WallPost {
   id: string;
   userId: string;
   text: string;
   image: string | null;
+  attachments: Attachment[];
+  link: string | null;
+  bg: string | null; // градиентный фон
+  animated: boolean;
   likes: string[];
   comments: WallComment[];
   ts: string;
   pinned: boolean;
 }
 
-export interface Notice {
-  id: string;
-  audience: string; // userId или 'all'
-  text: string;
-  ts: string;
-  readBy: string[];
-}
-
-export interface AuditEntry {
-  id: string;
-  ts: string;
-  actor: string;
-  action: string;
-  details: string;
-}
+export interface Notice { id: string; audience: string; text: string; ts: string; readBy: string[]; }
+export interface AuditEntry { id: string; ts: string; actor: string; action: string; details: string; }
+export interface GameLink { id: string; name: string; url: string; }
+export interface GameScore { id: string; game: string; userId: string; score: number; ts: string; }
+export interface SensorPoint { id: string; name: string; value: number; unit: string; ts: string; }
 
 export interface Settings {
   orgName: string;
   orgInn: string;
   orgAddress: string;
-  dailyNorm: number; // часы
-  breakMin: number; // обед, мин
-  overtimeK: number; // коэффициент переработки
-  kioskFree: boolean; // терминал без пароля
-  adminPin: string; // служебный выход из терминала
+  dailyNorm: number;
+  breakMin: number;
+  overtimeK: number;
+  kioskFree: boolean;
+  adminPin: string;
+  aiMode: "off" | "light" | "std" | "adv";
+  ollamaOn: boolean;
+  ollamaUrl: string;
+  ollamaModel: string;
+  apiToken: string;
 }
 
 export type PermMatrix = Record<ModuleId, Record<Role, { desktop: boolean; mobile: boolean }>>;
@@ -114,12 +176,23 @@ export type PermMatrix = Record<ModuleId, Record<Role, { desktop: boolean; mobil
 export interface DB {
   v: number;
   users: User[];
+  workshops: Workshop[];
+  positions: Position[];
   punches: Punch[];
   schedule: ShiftCell[];
+  products: Product[];
+  production: ProductionRecord[];
+  threads: ChatThread[];
+  messages: ChatMessage[];
+  reminders: Reminder[];
+  events: ScheduleEvent[];
   requests: WorkRequest[];
   posts: WallPost[];
   notices: Notice[];
   audit: AuditEntry[];
+  games: GameLink[];
+  scores: GameScore[];
+  sensors: SensorPoint[];
   settings: Settings;
   perms: PermMatrix;
 }
@@ -130,20 +203,40 @@ export const ROLE_LABEL: Record<Role, string> = {
   employee: "Сотрудник",
 };
 
+export const PAY_LABEL: Record<PayMode, string> = {
+  hour: "Почасовая",
+  shift: "Посменная",
+  piece: "Сдельная",
+};
+
+export const KIND_LABEL: Record<RequestKind, string> = {
+  swap: "Замена дня",
+  vacation: "Отпуск",
+  extra: "Доп. смена",
+  resolution: "Подтверждение смены",
+};
+
 export const MODULES: { id: ModuleId; label: string; icon: string; group: "user" | "admin" }[] = [
   { id: "punch", label: "Моя смена", icon: "clock", group: "user" },
   { id: "stats", label: "Статистика", icon: "chart", group: "user" },
   { id: "schedule", label: "График", icon: "cal", group: "user" },
   { id: "requests", label: "Заявки", icon: "doc", group: "user" },
-  { id: "feed", label: "Лента", icon: "feed", group: "user" },
+  { id: "production", label: "Выработка", icon: "box", group: "user" },
+  { id: "feed", label: "Стена", icon: "feed", group: "user" },
+  { id: "chat", label: "Сообщения", icon: "chat", group: "user" },
+  { id: "games", label: "Игры и утилиты", icon: "game", group: "user" },
   { id: "profile", label: "Профиль", icon: "user", group: "user" },
   { id: "dashboard", label: "Дашборд", icon: "grid", group: "admin" },
   { id: "employees", label: "Сотрудники", icon: "users", group: "admin" },
+  { id: "org", label: "Цеха · Должности · ФОТ", icon: "factory", group: "admin" },
   { id: "reports", label: "Отчёты", icon: "pdf", group: "admin" },
+  { id: "ai", label: "ИИ-аналитик", icon: "brain", group: "admin" },
+  { id: "reminders", label: "Напоминания", icon: "bell", group: "admin" },
   { id: "dataio", label: "Данные / Excel", icon: "xls", group: "admin" },
   { id: "permissions", label: "Права доступа", icon: "shield", group: "admin" },
-  { id: "audit", label: "Журнал аудита", icon: "history", group: "admin" },
+  { id: "audit", label: "Журналы", icon: "history", group: "admin" },
   { id: "settings", label: "Настройки", icon: "gear", group: "admin" },
+  { id: "help", label: "Инструкции и API", icon: "help", group: "admin" },
 ];
 
 export const SHIFT_META: Record<
@@ -158,19 +251,43 @@ export const SHIFT_META: Record<
 };
 
 export function defaultPerms(): PermMatrix {
-  const T = { desktop: true, mobile: true };
-  const F = { desktop: false, mobile: false };
-  const userMods: ModuleId[] = ["punch", "stats", "schedule", "requests", "feed", "profile"];
-  const adminMods: ModuleId[] = ["dashboard", "employees", "reports", "dataio", "settings"];
-  const m = {} as PermMatrix;
-  for (const mod of MODULES) {
-    const isUser = userMods.includes(mod.id);
-    const isAdmin = adminMods.includes(mod.id);
-    m[mod.id] = {
-      employee: isUser ? { ...T } : { ...F },
-      admin: isUser || isAdmin ? { ...T } : { ...F },
-      superadmin: { ...T },
-    };
+  const roles: Role[] = ["superadmin", "admin", "employee"];
+  const userMods: ModuleId[] = ["punch", "stats", "schedule", "requests", "feed", "chat", "production", "games", "profile", "help"];
+  const adminMods: ModuleId[] = ["dashboard", "employees", "org", "reports", "ai", "reminders", "dataio", "settings"];
+  const superMods: ModuleId[] = ["permissions", "audit"];
+  const all = MODULES.map((m) => m.id);
+  const out = {} as PermMatrix;
+  for (const m of all) {
+    out[m] = {} as PermMatrix[ModuleId];
+    for (const r of roles) {
+      const on =
+        userMods.includes(m) ||
+        (r !== "employee" && adminMods.includes(m)) ||
+        (r === "superadmin" && superMods.includes(m));
+      out[m][r] = { desktop: on, mobile: on };
+    }
   }
-  return m;
+  return out;
 }
+
+export const API_ENDPOINTS: { method: string; path: string; desc: string; auth: boolean }[] = [
+  { method: "GET", path: "/api/ping", desc: "Проверка доступности сервера", auth: false },
+  { method: "GET", path: "/api/health", desc: "Состояние: версия БД, аптайм, бэкапы", auth: false },
+  { method: "GET", path: "/api/state", desc: "Версия базы (для real-time синхронизации)", auth: false },
+  { method: "GET", path: "/api/db", desc: "Полная база {version, data}", auth: false },
+  { method: "POST", path: "/api/db", desc: "Запись базы (синхронизация клиентов)", auth: false },
+  { method: "GET", path: "/api/today", desc: "Кто сейчас на смене + отметки за сегодня", auth: false },
+  { method: "GET", path: "/api/employees", desc: "Список сотрудников (без паролей)", auth: false },
+  { method: "GET", path: "/api/punches?date=YYYY-MM-DD", desc: "Отметки за дату", auth: false },
+  { method: "GET", path: "/api/stats?from=..&to=..", desc: "Часы план/факт по сотрудникам", auth: false },
+  { method: "GET", path: "/api/production?from=..&to=..", desc: "Выработка (обвалка, цеха)", auth: false },
+  { method: "GET", path: "/api/logs?limit=N", desc: "Журнал действий (аудит)", auth: false },
+  { method: "GET", path: "/api/sensors", desc: "Лента показаний датчиков", auth: false },
+  { method: "GET", path: "/api/sensors/latest?name=X", desc: "Последнее значение датчика", auth: false },
+  { method: "POST", path: "/api/sensors", desc: "Записать показание {name, value, unit}", auth: true },
+  { method: "POST", path: "/api/backup", desc: "Создать резервную копию сейчас", auth: true },
+  { method: "GET", path: "/api/backups", desc: "Список резервных копий", auth: false },
+  { method: "POST", path: "/api/files", desc: "Загрузить файл (фото стены/чата) → URL", auth: true },
+  { method: "GET", path: "/files/<имя>", desc: "Скачать сохранённый файл", auth: false },
+  { method: "GET", path: "/api/endpoints", desc: "Этот список (машиночитаемый)", auth: false },
+];

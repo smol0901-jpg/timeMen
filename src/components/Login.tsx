@@ -1,166 +1,117 @@
-import React, { useEffect, useState } from "react";
-import { useStore, openPunchOf } from "../lib/store";
+import React, { useState } from "react";
+import { useStore, openPunchOf, punchDur } from "../lib/store";
 import { User } from "../lib/types";
+import { MONTHS, WD_FULL, fmtClock, fmtDurH } from "../lib/time";
 import { useNow, Avatar, I, Logo, OnlineDot, useToast, RoleBadge } from "./ui";
-import { MONTHS, WD_FULL, fmtClock, fmtDurH, nowMin } from "../lib/time";
 
 export default function Login({ onKiosk }: { onKiosk: () => void }) {
-  const { db, login, online } = useStore();
+  const { db, login, recoverRoot, online } = useStore();
   const { toast } = useToast();
   const now = useNow();
-  const [sel, setSel] = useState<User | null>(null);
-  const [pwd, setPwd] = useState("");
+  const [u, setU] = useState("");
+  const [p, setP] = useState("");
   const [err, setErr] = useState("");
-  const [deferred, setDeferred] = useState<Event & { prompt?: () => void } | null>(null);
+  const [rec, setRec] = useState(false);
+  const [code, setCode] = useState("");
 
-  useEffect(() => {
-    const h = (e: Event) => { e.preventDefault(); setDeferred(e as never); };
-    window.addEventListener("beforeinstallprompt", h);
-    return () => window.removeEventListener("beforeinstallprompt", h);
-  }, []);
+  const quick: { label: string; u: string; p: string }[] = [
+    { label: "root · суперадмин", u: "root", p: "root" },
+    { label: "demo · песочница (без пароля)", u: "demo", p: "" },
+  ];
+  const emps = db.users.filter((x) => x.role === "employee" && x.active && !x.password).slice(0, 4);
 
-  const active = db.users.filter((u) => u.active);
-  const submit = () => {
-    if (!sel) return;
-    const e = login(sel.username, pwd);
-    if (e) { setErr(e); setPwd(""); }
-    else toast(`С возвращением, ${sel.name.split(" ")[0]}!`, "ok");
+  const go = (username: string, password: string) => {
+    const r = login(username, password);
+    if (r) { setErr(r); toast(r, "bad"); }
   };
 
   return (
-    <div className="min-h-full flex bg-paper">
-      {/* левая панель — пульт */}
-      <div className="hidden lg:flex flex-col w-[460px] xl:w-[520px] shrink-0 bg-steel-900 text-paper relative overflow-hidden">
-        <div className="absolute -right-28 -top-28 w-[420px] h-[420px] rounded-full border-[36px] border-steel-800 pointer-events-none" />
-        <div className="absolute -right-28 -top-28 w-[420px] h-[420px] rounded-full border border-steel-700 pointer-events-none" />
-        <div className="absolute right-24 top-56 w-3 h-3 rounded-full bg-accent pulse-ok pointer-events-none" />
-        <div className="p-10 flex flex-col h-full relative">
-          <div className="flex items-center gap-3.5">
-            <Logo size={52} />
-            <div>
-              <div className="font-display font-bold text-xl tracking-tight leading-none">СМЕНА<span className="text-accent">ЛАН</span></div>
-              <div className="text-[11px] font-bold text-steel-400 mt-1.5 uppercase tracking-[0.14em]">сервер учёта смен · LAN</div>
-            </div>
+    <div className="min-h-full grid lg:grid-cols-[1.1fr_1fr]">
+      <div className="bg-steel-950 text-paper p-6 sm:p-10 flex flex-col relative overflow-hidden">
+        <div className="absolute -right-24 -top-24 w-96 h-96 rounded-full border-[28px] border-steel-800/70" />
+        <div className="absolute -right-10 -top-10 w-96 h-96 rounded-full border-[10px] border-accent/25" />
+        <div className="flex items-center gap-3">
+          <Logo size={46} />
+          <div>
+            <b className="font-display text-xl tracking-tight block leading-none">СМЕНА<span className="text-accent">ЛАН</span></b>
+            <span className="text-[10px] font-extrabold text-steel-400 uppercase tracking-[0.2em]">локальный сервер учёта смен</span>
           </div>
-
-          <div className="mt-12">
-            <div className="font-mono tnum font-semibold text-[64px] leading-none tracking-tight">{fmtClock(now)}</div>
-            <div className="text-steel-400 font-semibold mt-3 capitalize">
-              {WD_FULL[(now.getDay() + 6) % 7]}, {now.getDate()} {MONTHS[now.getMonth()]} {now.getFullYear()}
-            </div>
+        </div>
+        <div className="mt-auto pt-10">
+          <div className="font-mono tnum font-semibold text-6xl sm:text-7xl">{fmtClock(now)}</div>
+          <div className="text-steel-400 font-bold mt-2 capitalize">{WD_FULL[(now.getDay() + 6) % 7]}, {now.getDate()} {MONTHS[now.getMonth()]}</div>
+          <div className="mt-6 grid gap-2 max-w-sm">
+            {db.punches.filter((x) => x.tout === null).slice(0, 4).map((x) => {
+              const user = db.users.find((y) => y.id === x.userId);
+              return (
+                <div key={x.id} className="flex items-center gap-3 bg-steel-800/80 border border-steel-700 rounded-xl px-3.5 py-2.5 anim-rise">
+                  <Avatar u={user} size={32} />
+                  <div className="min-w-0 flex-1">
+                    <b className="text-[13px] block truncate">{user?.name}</b>
+                    <span className="text-[10.5px] text-steel-400 font-bold uppercase">на смене</span>
+                  </div>
+                  <span className="font-mono tnum font-bold text-ok text-sm">{fmtDurH(punchDur(x, db.settings.breakMin, true))}</span>
+                  <span className="w-2 h-2 rounded-full bg-ok pulse-ok" />
+                </div>
+              );
+            })}
           </div>
-
-          <div className="mt-10 grid gap-2.5 text-sm font-semibold text-steel-200">
-            {[
-              ["clock", "Отметки прихода и ухода — с ПК, телефона или терминала"],
-              ["cal", "Графики по цехам, заявки на замену, отпуск и доп. смены"],
-              ["pdf", "Табель и расчёт зарплаты: Excel и бланк PDF для бухгалтерии"],
-              ["shield", "Роли: суперадмин, админ, сотрудники — без ограничений по числу"],
-            ].map(([ic, t]) => (
-              <div key={ic} className="flex items-start gap-3 bg-steel-800/70 border border-steel-700 rounded-xl px-4 py-3">
-                <span className="text-accent mt-0.5"><I n={ic} size={17} /></span>{t}
-              </div>
-            ))}
-          </div>
-
-          <div className="mt-auto pt-8 flex items-center justify-between text-[11px] font-bold text-steel-400">
-            <span className="flex items-center gap-2"><I n="wifi" size={14} /> {online ? <>{window.location.protocol}//<b className="text-paper">{window.location.host}</b></> : "локальный режим (без сервера)"}</span>
+          <div className="mt-8 pt-6 border-t border-steel-700 flex items-center justify-between text-[11px] font-bold text-steel-400 flex-wrap gap-2">
+            <span className="flex items-center gap-2"><I n="wifi" size={14} />{online ? <>{window.location.protocol}//<b className="text-paper">{window.location.host}</b> · реальное время</> : "локальный режим (без сервера)"}</span>
             <OnlineDot />
           </div>
         </div>
       </div>
 
-      {/* правая панель — выбор сотрудника */}
-      <div className="flex-1 flex flex-col min-w-0">
-        <div className="lg:hidden flex items-center gap-3 px-5 py-4 bg-steel-900 text-paper">
-          <Logo size={38} />
-          <div>
-            <div className="font-display font-bold leading-none">СМЕНА<span className="text-accent">ЛАН</span></div>
-            <div className="text-[10px] font-bold text-steel-400 uppercase tracking-widest mt-1">учёт смен · LAN</div>
-          </div>
-          <div className="ml-auto font-mono tnum font-semibold text-lg">{fmtClock(now).slice(0, 5)}</div>
-        </div>
+      <div className="bg-paper p-6 sm:p-10 flex items-center">
+        <div className="w-full max-w-md mx-auto">
+          <h1 className="font-display text-2xl font-bold tracking-tight">Вход в систему</h1>
+          <p className="text-mute font-bold text-sm mt-1.5">Свой логин выдаёт администратор. Пароль не обязателен — установите его в профиле.</p>
+          <form className="mt-6 grid gap-3" onSubmit={(e) => { e.preventDefault(); go(u, p); }}>
+            <input className="input !h-12 !text-base font-mono" placeholder="Логин" value={u} onChange={(e) => { setU(e.target.value); setErr(""); }} autoFocus />
+            <input className="input !h-12 !text-base font-mono" type="password" placeholder="Пароль (если задан)" value={p} onChange={(e) => { setP(e.target.value); setErr(""); }} />
+            {err && <div className="text-[12px] font-bold text-bad flex items-center gap-1.5"><I n="warn" size={14} />{err}</div>}
+            <button className="btn btn-pri !h-12 !text-base" type="submit"><I n="in" size={18} />Войти</button>
+          </form>
 
-        <div className="flex-1 overflow-y-auto p-5 sm:p-10">
-          <div className="max-w-3xl mx-auto">
-            <h1 className="font-display text-2xl sm:text-3xl font-bold tracking-tight">Кто выходит на смену?</h1>
-            <p className="text-mute font-semibold text-sm mt-2">Выберите себя в списке — пароль нужен, только если он задан администратором.</p>
-
-            <div className="flex flex-wrap gap-2 mt-5 items-center">
-              <span className="lbl !mb-0 mr-1">Демо-доступ:</span>
-              {[["root", "root", "Суперадмин"], ["plan", "1234", "Админ"], ["igor", "1234", "Сотрудник"], ["marina", "—", "Без пароля"]].map(([l, p, r]) => (
-                <button key={l} className="chip" onClick={() => {
-                  if (p === "—") { doQuick(l, ""); } else { doQuick(l, p); }
-                }}>
-                  <span className="text-mute">{r}</span> <b>{l}</b>{p !== "—" && <span className="text-mute">/ {p}</span>}
+          <div className="mt-5">
+            <span className="lbl">Быстрый вход</span>
+            <div className="grid gap-1.5">
+              {quick.map((q) => (
+                <button key={q.u} className="btn btn-ghost justify-start !text-[13px]" onClick={() => { setU(q.u); setP(q.p); go(q.u, q.p); }}>
+                  <I n="user" size={15} className="text-mute" />{q.label}
+                </button>
+              ))}
+              {emps.map((x) => (
+                <button key={x.id} className="btn btn-ghost justify-start !text-[13px]" onClick={() => { setU(x.username); go(x.username, ""); }}>
+                  <Avatar u={x} size={20} />{x.name} · без пароля
                 </button>
               ))}
             </div>
+          </div>
 
-            {sel && (
-              <div className="anim-pop card mt-6 p-5 border-l-4 !border-l-accent">
-                <div className="flex items-center gap-3.5">
-                  <Avatar u={sel} size={46} />
-                  <div className="min-w-0">
-                    <div className="font-extrabold truncate">{sel.name}</div>
-                    <div className="flex items-center gap-2 mt-0.5 text-xs text-mute font-semibold">
-                      <span>{sel.dept}</span>·<RoleBadge role={sel.role} />
-                    </div>
-                  </div>
-                  {openPunchOf(db, sel.id) && <span className="badge bg-ok-soft text-ok ml-auto"><span className="w-1.5 h-1.5 rounded-full bg-ok pulse-ok" />на смене</span>}
-                </div>
-                {sel.password ? (
-                  <form className="mt-4 flex gap-2" onSubmit={(e) => { e.preventDefault(); submit(); }}>
-                    <input autoFocus type="password" className="input max-w-[240px]" placeholder="Пароль" value={pwd}
-                      onChange={(e) => { setPwd(e.target.value); setErr(""); }} />
-                    <button className="btn btn-pri" type="submit"><I n="in" size={16} />Войти</button>
-                  </form>
-                ) : (
-                  <button className="btn btn-pri mt-4" onClick={submit}><I n="in" size={16} />Войти без пароля</button>
-                )}
-                {err && <div className="mt-3 text-xs font-bold text-bad flex items-center gap-1.5"><I n="warn" size={14} />{err}</div>}
+          <div className="mt-5 grid gap-2">
+            <button className="btn btn-dark !h-11" onClick={onKiosk}><I n="desk" size={17} />Режим терминала (киоск у проходной)</button>
+            <button className="btn btn-ghost btn-sm self-start" onClick={() => setRec(!rec)}><I n="key" size={13} />Забыт пароль суперадмина</button>
+          </div>
+
+          {rec && (
+            <div className="mt-3 card p-4 anim-pop">
+              <p className="text-[12px] font-bold text-mute leading-relaxed">Введите резервный код восстановления (выдаётся владельцу системы). Пароль суперадмина будет сброшен на стандартный — сразу смените его.</p>
+              <div className="flex gap-2 mt-2.5">
+                <input className="input font-mono !text-[13px]" type="password" placeholder="Резервный код" value={code} onChange={(e) => setCode(e.target.value)} />
+                <button className="btn btn-dark" onClick={() => {
+                  if (recoverRoot(code)) { toast("Пароль суперадмина сброшен на стандартный", "ok"); setRec(false); setCode(""); setU("root"); }
+                  else toast("Неверный резервный код", "bad");
+                }}>Сбросить</button>
               </div>
-            )}
-
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 mt-6">
-              {active.map((u, i) => (
-                <button key={u.id} onClick={() => { setSel(u); setErr(""); setPwd(""); }}
-                  className={`anim-rise card p-3.5 flex items-center gap-3 text-left transition-all duration-150 hover:-translate-y-0.5 hover:shadow-md cursor-pointer
-                    ${sel?.id === u.id ? "!border-accent ring-2 ring-accent/25" : ""}`}
-                  style={{ animationDelay: `${i * 35}ms` }}>
-                  <Avatar u={u} size={40} />
-                  <div className="min-w-0">
-                    <div className="font-bold text-sm truncate leading-tight">{u.name}</div>
-                    <div className="text-[11px] text-mute font-semibold truncate mt-0.5">
-                      {u.dept}{!u.password && <span className="text-ok ml-1">· без пароля</span>}
-                    </div>
-                  </div>
-                </button>
-              ))}
             </div>
+          )}
 
-            <div className="flex flex-wrap gap-2.5 mt-8">
-              <button className="btn btn-dark" onClick={onKiosk}><I n="desk" size={17} />Режим терминала (киоск)</button>
-              {deferred && (
-                <button className="btn btn-ghost" onClick={async () => {
-                  (deferred as { prompt: () => void }).prompt();
-                  setDeferred(null);
-                  toast("Установка PWA…", "ok");
-                }}><I n="phone" size={17} />Установить приложение</button>
-              )}
-            </div>
-            <p className="text-[11px] text-mute font-semibold mt-4 flex items-center gap-1.5">
-              <I n="info" size={13} /> Работает внутри одной Wi-Fi сети · сегодня на смене: {db.punches.filter((p) => p.tout === null).length} чел · {fmtDurH(nowMin())} с начала суток
-            </p>
-          </div>
+          <p className="mt-6 text-[11px] font-bold text-mute leading-relaxed">Суперадмин создаёт сотрудников в админке; изначально все входят без пароля и устанавливают его сами. Работа идёт в одной Wi-Fi сети — ссылка для телефонов есть в трее сервера.</p>
         </div>
       </div>
     </div>
   );
-
-  function doQuick(l: string, p: string) {
-    const e = login(l, p);
-    if (e) toast(e, "bad");
-    else toast("Вход выполнен", "ok");
-  }
 }
+

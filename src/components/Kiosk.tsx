@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { useStore, openPunchOf, punchDur } from "../lib/store";
+import { useStore, openPunchOf, punchDur, wsName } from "../lib/store";
 import { Avatar, I, Logo, Modal, OnlineDot, useNow, useToast } from "./ui";
 import { fmtClock, fmtMin, nowMin, MONTHS, WD_FULL, fmtDurH } from "../lib/time";
 
@@ -61,7 +61,7 @@ export default function Kiosk({ onExit }: { onExit: () => void }) {
                   <Avatar u={u} size={44} />
                   <div className="min-w-0">
                     <div className="font-extrabold text-sm leading-tight truncate">{u.name}</div>
-                    <div className="text-[11px] text-steel-400 font-bold truncate mt-0.5">{u.dept}</div>
+                    <div className="text-[11px] text-steel-400 font-bold truncate mt-0.5">{wsName(db, u.workshopId)}</div>
                   </div>
                 </div>
                 <div className="mt-3 flex items-center justify-between">
