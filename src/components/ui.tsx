@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from "react";
 import { User } from "../lib/types";
 import { fmtDurH } from "../lib/time";
+import { useStore } from "../lib/store";
 
 // ---------- иконки ----------
 const PATHS: Record<string, React.ReactNode> = {
@@ -264,17 +265,18 @@ export function useNow(ms = 1000): Date {
 }
 
 export function OnlineDot() {
-  const [on, setOn] = useState(navigator.onLine);
-  useEffect(() => {
-    const a = () => setOn(true), b = () => setOn(false);
-    window.addEventListener("online", a);
-    window.addEventListener("offline", b);
-    return () => { window.removeEventListener("online", a); window.removeEventListener("offline", b); };
-  }, []);
+  const { online } = useStore();
   return (
-    <span className="inline-flex items-center gap-1.5 text-[11px] font-extrabold text-mute">
-      <span className={`w-2 h-2 rounded-full ${on ? "bg-ok pulse-ok" : "bg-bad"}`} />
-      {on ? "LAN · онлайн" : "офлайн"}
+    <span
+      title={
+        online
+          ? "LAN-сервер доступен: общая база синхронизирована между всеми устройствами сети"
+          : "LAN-сервер недоступен: локальный режим, данные остаются на этом устройстве"
+      }
+      className="inline-flex items-center gap-1.5 text-[11px] font-extrabold text-mute"
+    >
+      <span className={`w-2 h-2 rounded-full ${online ? "bg-ok pulse-ok" : "bg-warn blink"}`} />
+      {online ? "Сервер · синхронизация" : "Локальный режим"}
     </span>
   );
 }
