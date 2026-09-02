@@ -398,7 +398,7 @@ export function AuditView() {
 
 // ================= НАСТРОЙКИ =================
 export function SettingsView() {
-  const { db, setSettings } = useStore();
+  const { db, setSettings, online } = useStore();
   const { toast } = useToast();
   const [s, setS] = useState({ ...db.settings });
   const [saved, setSaved] = useState(false);
@@ -428,6 +428,29 @@ export function SettingsView() {
           </button>
           <span className="text-sm font-bold">Терминал без пароля<span className="block text-[11px] text-mute font-semibold">отметка на киоске одним касанием</span></span>
         </label>
+      </div>
+      <div className="lg:col-span-2 card p-6 bg-steel-900 !border-steel-700 text-paper">
+        <div className="flex items-start gap-4 flex-wrap">
+          <div className="w-10 h-10 rounded-xl bg-accent grid place-items-center shrink-0"><I n="wifi" size={20} /></div>
+          <div className="flex-1 min-w-[260px]">
+            <h3 className="font-display text-sm font-semibold flex items-center gap-2">
+              Локальный сервер (системный трей)
+              <span className={`badge ${online ? "bg-ok text-white" : "bg-warn text-white"}`}>
+                <span className={`w-1.5 h-1.5 rounded-full bg-white ${online ? "pulse-ok" : "blink"}`} />
+                {online ? "онлайн · общая база" : "офлайн · локальный режим"}
+              </span>
+            </h3>
+            <p className="text-[13px] text-steel-200 leading-relaxed mt-2 max-w-2xl">
+              Порт, автозапуск и ссылка для сотрудников настраиваются в <b className="text-paper">иконке сервера в трее</b> (правый клик):
+              копирование ссылки в один клик, QR-код для телефонов, список IP-адресов. Установка: папка <span className="font-mono text-accent">server</span> → <span className="font-mono text-accent">install.bat</span>.
+            </p>
+            <div className="flex flex-wrap gap-x-6 gap-y-1 mt-3 text-[11.5px] font-bold text-steel-400">
+              <span>база: server/data/db.json</span>
+              <span>журнал: server/server.log</span>
+              <span>резервная копия создаётся при каждом сохранении</span>
+            </div>
+          </div>
+        </div>
       </div>
       <div className="lg:col-span-2 flex items-center justify-between card p-4">
         <p className="text-xs font-bold text-mute flex items-center gap-1.5"><I n="info" size={13} />Настройки применяются ко всем устройствам в сети сразу{saved && <span className="text-ok">· сохранено ✓</span>}</p>
