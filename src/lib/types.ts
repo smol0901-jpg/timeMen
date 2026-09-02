@@ -1,10 +1,11 @@
-export type Role = "superadmin" | "admin" | "employee";
+export type Role = "superadmin" | "admin" | "accountant" | "employee";
 export type Device = "desktop" | "mobile";
 export type PayMode = "hour" | "shift" | "piece";
+export type KioskTheme = "steel" | "mint" | "sunset" | "ocean" | "light";
 
 export type ModuleId =
   | "punch" | "stats" | "schedule" | "requests" | "feed" | "chat" | "production" | "games" | "profile"
-  | "dashboard" | "employees" | "org" | "reports" | "ai" | "dataio" | "permissions" | "audit" | "reminders" | "settings" | "help";
+  | "dashboard" | "employees" | "org" | "reports" | "ai" | "payroll" | "archive" | "dataio" | "permissions" | "audit" | "reminders" | "settings" | "help";
 
 export interface Workshop {
   id: string;
@@ -38,6 +39,12 @@ export interface User {
   bio: string;
   active: boolean;
   createdAt: string;
+  // архив (уволенные/удалённые): запись неудаляема 30 дней, затем — только суперадмин
+  archived?: boolean;
+  archivedAt?: string;
+  archiveReason?: string;
+  archiveTone?: "pos" | "neg" | "neutral"; // зелёный / красный / без подсветки
+  archiveNote?: string; // характеристика
 }
 
 export interface Punch {
@@ -48,7 +55,39 @@ export interface Punch {
   tout: number | null;
   source: "app" | "kiosk" | "admin" | "auto";
   auto?: "schedule" | "unscheduled" | null;
-  resolution?: "pending" | "ok" | null; // требует подтверждения
+  resolution?: "pending" | "ok" | null; // требует подтверждения админа (проверить камеры)
+  plannedOut?: number | null; // вне графика: сотрудник указал «работаю до»
+}
+
+export interface Fine {
+  id: string;
+  userId: string;
+  amount: number; // ₽, вычитается из расчёта
+  reason: string;
+  periodId: string | null;
+  createdBy: string;
+  ts: string;
+}
+
+export interface Rating {
+  id: string;
+  userId: string;
+  month: string; // YYYY-MM
+  points: number; // 0–100
+  note: string;
+  by: string;
+  ts: string;
+}
+
+export interface PayPeriod {
+  id: string;
+  kind: "day" | "week" | "month" | "season";
+  from: string;
+  to: string;
+  label: string;
+  status: "open" | "approved" | "paid";
+  approvedBy?: string;
+  ts: string;
 }
 
 export type ShiftType = "day" | "night" | "off" | "vacation" | "sick";
@@ -147,6 +186,7 @@ export interface WallPost {
   comments: WallComment[];
   ts: string;
   pinned: boolean;
+  favs?: string[]; // «избранное» по пользователям
 }
 
 export interface Notice { id: string; audience: string; text: string; ts: string; readBy: string[]; }
@@ -169,6 +209,10 @@ export interface Settings {
   ollamaUrl: string;
   ollamaModel: string;
   apiToken: string;
+  kioskTheme: KioskTheme;
+  bestUserId: string | null; // «лучший сотрудник» месяца
+  bestOn: boolean; // показывать ли бейдж
+  camNote: string; // подсказка админу про камеры для внеплановых смен
 }
 
 export type PermMatrix = Record<ModuleId, Record<Role, { desktop: boolean; mobile: boolean }>>;
@@ -193,6 +237,9 @@ export interface DB {
   games: GameLink[];
   scores: GameScore[];
   sensors: SensorPoint[];
+  fines: Fine[];
+  ratings: Rating[];
+  periods: PayPeriod[];
   settings: Settings;
   perms: PermMatrix;
 }
@@ -200,6 +247,7 @@ export interface DB {
 export const ROLE_LABEL: Record<Role, string> = {
   superadmin: "Суперадмин",
   admin: "Админ",
+  accountant: "Бухгалтерия",
   employee: "Сотрудник",
 };
 
@@ -231,6 +279,8 @@ export const MODULES: { id: ModuleId; label: string; icon: string; group: "user"
   { id: "org", label: "Цеха · Должности · ФОТ", icon: "factory", group: "admin" },
   { id: "reports", label: "Отчёты", icon: "pdf", group: "admin" },
   { id: "ai", label: "ИИ-аналитик", icon: "brain", group: "admin" },
+  { id: "payroll", label: "Расчёты", icon: "coin", group: "admin" },
+  { id: "archive", label: "Архив сотрудников", icon: "layers", group: "admin" },
   { id: "reminders", label: "Напоминания", icon: "bell", group: "admin" },
   { id: "dataio", label: "Данные / Excel", icon: "xls", group: "admin" },
   { id: "permissions", label: "Права доступа", icon: "shield", group: "admin" },
