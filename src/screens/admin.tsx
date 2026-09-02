@@ -7,6 +7,7 @@ import {
 } from "../lib/time";
 import { I, Avatar, useToast, Modal, Confirm, Field, Empty, Seg, RoleBadge, StatTile } from "../components/ui";
 import { exportScheduleMonth, scheduleTemplate, parseScheduleFile, parseEmployeesFile } from "../lib/excel";
+import { DossierModal, FinePanel, RatingPanel } from "./hr";
 
 // ================= ДАШБОРД =================
 export function DashboardView() {
@@ -32,6 +33,7 @@ export function DashboardView() {
 
   return (
     <div className="grid gap-4">
+      <BestStrip />
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         <StatTile icon="zap" tone="ok" label="Сейчас на смене" val={String(onShift.length)} sub={`план на сегодня: ${planned}`} />
         <StatTile icon="clock" tone="accent" label="Часы за сегодня" val={fmtDur(todayHours)} sub="все сотрудники" />
@@ -130,10 +132,15 @@ export function DashboardView() {
 const AV_COLORS = ["#e56f24", "#3f6d9e", "#17875c", "#a97a12", "#7a4fbf", "#c74436", "#0f8b8d", "#b0487d"];
 
 export function EmployeesView() {
-  const { db, me, addUser, updateUser, removeUser } = useStore();
+  const { db, me, addUser, updateUser, archiveUser } = useStore();
   const { toast } = useToast();
   const [modal, setModal] = useState<null | { edit?: User }>(null);
   const [del, setDel] = useState<User | null>(null);
+  const [hrFor, setHrFor] = useState<User | null>(null);
+  const [dossier, setDossier] = useState<User | null>(null);
+  const [archReason, setArchReason] = useState("");
+  const [archTone, setArchTone] = useState<"pos" | "neg" | "neutral">("neutral");
+  const [archNote, setArchNote] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const [f, setF] = useState({ username: "", name: "", role: "employee" as Role, workshopId: "", positionId: "", payMode: "hour" as PayMode, rate: "", shiftCost: "", password: "" });
 
@@ -192,7 +199,7 @@ export function EmployeesView() {
         <table className="tbl min-w-[860px]">
           <thead><tr><th>Сотрудник</th><th>Логин</th><th>Роль</th><th>Цех</th><th>Должность</th><th>Оплата</th><th>Пароль</th><th>Активен</th><th></th></tr></thead>
           <tbody>
-            {db.users.map((u) => (
+            {db.users.filter((u) => !u.archived).map((u) => (
               <tr key={u.id} className={u.active ? "" : "opacity-50"}>
                 <td><span className="flex items-center gap-2.5"><Avatar u={u} size={30} /><b className="whitespace-nowrap">{u.name}</b></span></td>
                 <td className="font-mono text-[12px]">@{u.username}</td>
@@ -221,12 +228,14 @@ export function EmployeesView() {
                 </td>
                 <td>
                   <span className="flex gap-1">
-                    <button className="w-8 h-8 rounded-md grid place-items-center text-mute hover:bg-paper hover:text-ink transition" onClick={() => {
+                    <button className="w-8 h-8 rounded-md grid place-items-center text-mute hover:bg-paper hover:text-ink transition" title="Досье и живой график" onClick={() => setDossier(u)}><I n="chart" size={14} /></button>
+                    <button className="w-8 h-8 rounded-md grid place-items-center text-mute hover:bg-warn-soft hover:text-warn transition" title="Штрафы и балльные оценки" onClick={() => setHrFor(u)}><I n="star" size={14} /></button>
+                    <button className="w-8 h-8 rounded-md grid place-items-center text-mute hover:bg-paper hover:text-ink transition" title="Редактировать" onClick={() => {
                       setF({ username: u.username, name: u.name, role: u.role, workshopId: u.workshopId || "", positionId: u.positionId || "", payMode: u.payMode, rate: String(u.rate || ""), shiftCost: String(u.shiftCost || ""), password: u.password });
                       setModal({ edit: u });
                     }}><I n="edit" size={14} /></button>
                     {u.role !== "superadmin" && (
-                      <button className="w-8 h-8 rounded-md grid place-items-center text-mute hover:bg-bad-soft hover:text-bad transition" onClick={() => setDel(u)}><I n="trash" size={14} /></button>
+                      <button className="w-8 h-8 rounded-md grid place-items-center text-mute hover:bg-bad-soft hover:text-bad transition" title="Уволить → в архив (30 дней на восстановление)" onClick={() => { setDel(u); setArchReason(""); setArchTone("neutral"); setArchNote(""); }}><I n="layers" size={14} /></button>
                     )}
                   </span>
                 </td>
@@ -275,9 +284,49 @@ export function EmployeesView() {
         </div>
       </Modal>
 
-      <Confirm open={!!del} onClose={() => setDel(null)} title={`Удалить ${del?.name}?`}
-        text="Пользователь и его отметки будут удалены. Обычно лучше просто отключить — история останется."
-        onYes={() => { if (del) { const r = removeUser(del.id); toast(r || "Пользователь удалён", r ? "bad" : "ok"); } }} />
+      <Modal open={!!del} onClose={() => setDel(null)} title={`Увольнение: ${del?.name || ""}`} w="max-w-md"
+        foot={<>
+          <button className="btn btn-ghost" onClick={() => setDel(null)}>Отмена</button>
+          <button className="btn btn-bad" onClick={() => {
+            if (!del) return;
+            if (!archReason.trim()) { toast("Укажите причину увольнения", "bad"); return; }
+            const r = archiveUser(del.id, archReason.trim(), archTone, archNote.trim());
+            toast(r || `${del.name} перемещён в архив (30 дней на восстановление)`, r ? "bad" : "ok");
+            setDel(null);
+          }}><I n="layers" size={15} />В архив</button>
+        </>}>
+        <div className="grid gap-4">
+          <p className="text-[12.5px] text-mute font-bold leading-relaxed">Сотрудник попадает в архив с причиной, оценкой и характеристикой. Полное удаление — только суперадмином через 30 дней. История работы (часы, смены, выплаты, оценки) сохраняется навсегда.</p>
+          <Field label="Причина увольнения / удаления"><input className="input" value={archReason} onChange={(e) => setArchReason(e.target.value)} placeholder="Собственное желание / сокращение / нарушение…" /></Field>
+          <Field label="Оценка сотрудника" hint="Определяет подсветку в архиве">
+            <div className="flex gap-1.5 flex-wrap">
+              <button className={`chip ${archTone === "pos" ? "!border-ok !text-ok !bg-ok-soft" : ""}`} onClick={() => setArchTone("pos")}><I n="check" size={12} />Положительная (зелёная)</button>
+              <button className={`chip ${archTone === "neutral" ? "!border-ink" : ""}`} onClick={() => setArchTone("neutral")}>Нейтральная</button>
+              <button className={`chip ${archTone === "neg" ? "!border-bad !text-bad !bg-bad-soft" : ""}`} onClick={() => setArchTone("neg")}><I n="x" size={12} />Отрицательная (красная)</button>
+            </div>
+          </Field>
+          <Field label="Характеристика"><textarea className="input" rows={3} value={archNote} onChange={(e) => setArchNote(e.target.value)} placeholder="Краткая характеристика для архива…" /></Field>
+        </div>
+      </Modal>
+
+      <Modal open={!!hrFor} onClose={() => setHrFor(null)} w="max-w-xl"
+        title={<span className="flex items-center gap-2"><Avatar u={hrFor} size={24} />Штрафы и оценки: {hrFor?.name}</span>}
+        foot={<button className="btn btn-ghost" onClick={() => setHrFor(null)}>Закрыть</button>}>
+        {hrFor && (
+          <div className="grid gap-5">
+            <div>
+              <h4 className="lbl">Штрафы (вычитаются из расчёта)</h4>
+              <FinePanel userId={hrFor.id} />
+            </div>
+            <div>
+              <h4 className="lbl">Балльная оценка за месяц (0–100)</h4>
+              <RatingPanel userId={hrFor.id} />
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {dossier && <DossierModal user={dossier} onClose={() => setDossier(null)} />}
     </div>
   );
 }
@@ -395,6 +444,51 @@ function shiftM(mk: string, n: number): string {
   const [y, m] = mk.split("-").map(Number);
   const d = new Date(y, m - 1 + n, 1);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+// ---------- лучший сотрудник ----------
+function BestStrip() {
+  const { db, setSettings } = useStore();
+  const { toast } = useToast();
+  const [pick, setPick] = useState(false);
+  const s = db.settings;
+  const best = s.bestUserId ? userById(db, s.bestUserId) : null;
+  if (!s.bestOn && !best) return null;
+  const emps = db.users.filter((u) => u.role === "employee" && u.active && !u.archived);
+  return (
+    <div className="card !border-accent/50 p-4 flex items-center gap-3 flex-wrap anim-rise" style={{ background: "linear-gradient(100deg,#fbeadb 0%,#fff 55%)" }}>
+      <span className="w-10 h-10 rounded-xl bg-accent text-white grid place-items-center shrink-0"><I n="star" size={19} /></span>
+      <div className="min-w-0 flex-1">
+        <b className="text-sm block font-display">Сотрудник месяца</b>
+        {best ? (
+          <span className="text-[12.5px] font-bold text-mute flex items-center gap-2 mt-0.5"><Avatar u={best} size={22} />{best.name} · {wsName(db, best.workshopId)}</span>
+        ) : (
+          <span className="text-[12.5px] font-bold text-mute">Не назначен — отметьте лучшего, это видно всей команде (можно и не ставить).</span>
+        )}
+      </div>
+      <div className="flex gap-2">
+        <button className="btn btn-soft btn-sm" onClick={() => setPick(true)}><I n="star" size={13} />{best ? "Изменить" : "Назначить"}</button>
+        {best && <button className="btn btn-ghost btn-sm" onClick={() => { setSettings({ bestUserId: null }); toast("Бейдж снят"); }}>Снять</button>}
+        <button className={`btn btn-ghost btn-sm ${s.bestOn ? "" : "!text-mute"}`} onClick={() => setSettings({ bestOn: !s.bestOn })} title="Показывать/скрыть бейдж на стене и в дашборде">
+          <I n="eye" size={13} />{s.bestOn ? "Виден" : "Скрыт"}
+        </button>
+      </div>
+      <Modal open={pick} onClose={() => setPick(false)} title="Сотрудник месяца" w="max-w-sm"
+        foot={<button className="btn btn-ghost" onClick={() => setPick(false)}>Закрыть</button>}>
+        <div className="grid gap-1.5">
+          {emps.map((u) => (
+            <button key={u.id} className={`flex items-center gap-2.5 rounded-xl border px-3 py-2.5 text-left transition hover:border-accent ${s.bestUserId === u.id ? "!border-accent bg-accent-soft" : "border-line"}`}
+              onClick={() => { setSettings({ bestUserId: u.id }); setPick(false); toast(`${u.name} — сотрудник месяца`, "ok"); }}>
+              <Avatar u={u} size={32} />
+              <span className="min-w-0"><b className="text-[13px] block truncate">{u.name}</b><span className="text-[11px] text-mute font-bold">{wsName(db, u.workshopId)}</span></span>
+              {s.bestUserId === u.id && <I n="check" size={16} className="ml-auto text-accent-deep" />}
+            </button>
+          ))}
+          {emps.length === 0 && <p className="text-[12.5px] font-bold text-mute text-center py-4">Нет активных сотрудников.</p>}
+        </div>
+      </Modal>
+    </div>
+  );
 }
 
 export { summarizeAll, addDaysKey, fmtDateFull };

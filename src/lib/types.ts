@@ -301,19 +301,23 @@ export const SHIFT_META: Record<
 };
 
 export function defaultPerms(): PermMatrix {
-  const roles: Role[] = ["superadmin", "admin", "employee"];
-  const userMods: ModuleId[] = ["punch", "stats", "schedule", "requests", "feed", "chat", "production", "games", "profile", "help"];
-  const adminMods: ModuleId[] = ["dashboard", "employees", "org", "reports", "ai", "reminders", "dataio", "settings"];
-  const superMods: ModuleId[] = ["permissions", "audit"];
+  const roles: Role[] = ["superadmin", "admin", "accountant", "employee"];
+  const empMods: ModuleId[] = ["punch", "stats", "schedule", "requests", "production", "feed", "chat", "games", "profile", "help"];
+  const accMods: ModuleId[] = ["stats", "schedule", "feed", "chat", "games", "profile", "help", "reports", "payroll", "ai"];
+  const adminMods: ModuleId[] = [
+    ...empMods,
+    "dashboard", "employees", "org", "reports", "ai", "payroll", "archive", "reminders", "dataio", "settings",
+  ];
   const all = MODULES.map((m) => m.id);
   const out = {} as PermMatrix;
   for (const m of all) {
     out[m] = {} as PermMatrix[ModuleId];
     for (const r of roles) {
       const on =
-        userMods.includes(m) ||
-        (r !== "employee" && adminMods.includes(m)) ||
-        (r === "superadmin" && superMods.includes(m));
+        (r === "superadmin") ||
+        (r === "admin" && adminMods.includes(m)) ||
+        (r === "accountant" && accMods.includes(m)) ||
+        (r === "employee" && empMods.includes(m));
       out[m][r] = { desktop: on, mobile: on };
     }
   }

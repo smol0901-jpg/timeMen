@@ -1,24 +1,44 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   DB, User, Device, ModuleId, Punch, ShiftCell, ShiftType, WorkRequest, RequestKind,
-  Settings, PermMatrix, Role, Workshop, Position, Product, PayMode, Attachment, ScheduleEvent,
+  Settings, PermMatrix, Role, Workshop, Position, Product, PayMode, Attachment, ScheduleEvent, PayPeriod,
 } from "./types";
-import { SHIFT_META } from "./types";
+import { SHIFT_META, defaultPerms, MODULES } from "./types";
 import { makeSeed } from "./seed";
 import {
   todayKey, nowMin, uid, rangeKeys, fmtMin, fmtDur, fmtDateFull, fmtDurH, addDaysKey, monthTitle,
 } from "./time";
 
-const DB_KEY = "smenalan.db.v5";
+const DB_KEY = "smenalan.db.v6";
 const SES_KEY = "smenalan.session.v3";
 const RECOVERY_CODE_B64 = "TkVVUkFMX0FSQ0hJVEVDVF9QUkVNSVVNKys=";
 
+/** Дотягивает старые базы (v5) до текущей схемы v6 */
+function migrate(d: DB): DB {
+  d.v = 6;
+  d.fines = d.fines || [];
+  d.ratings = d.ratings || [];
+  d.periods = d.periods || [];
+  d.posts?.forEach((p) => { p.favs = p.favs || []; p.attachments = p.attachments || []; });
+  const dp = defaultPerms();
+  if (!d.perms) d.perms = dp;
+  for (const m of MODULES) {
+    if (!d.perms[m.id]) d.perms[m.id] = dp[m.id];
+    else for (const r of ["superadmin", "admin", "accountant", "employee"] as Role[])
+      if (!d.perms[m.id][r]) d.perms[m.id][r] = dp[m.id][r];
+  }
+  const def = makeSeed().settings;
+  d.settings = { ...def, ...(d.settings || {}) } as Settings;
+  return d;
+}
+
 function loadDb(): DB {
   try {
-    const raw = localStorage.getItem(DB_KEY);
+    const raw = localStorage.getItem(DB_KEY) || localStorage.getItem("smenalan.db.v5");
     if (raw) {
       const d = JSON.parse(raw);
-      if (d && d.v === 5 && Array.isArray(d.users) && d.users.some((u: User) => u.id === "u-root")) return d as DB;
+      if (d && (d.v === 5 || d.v === 6) && Array.isArray(d.users) && d.users.some((u: User) => u.id === "u-root"))
+        return migrate(d as DB);
     }
   } catch { /* ignore */ }
   return makeSeed();
@@ -80,7 +100,14 @@ export interface SumRow {
   days: number;
   shifts: number;
   pieceSum: number;
-  salary: number;
+  salary: number; // начислено до штрафов
+  fineSum: number; // штрафы за период
+  net: number; // к выплате
+}
+export function finesOf(db: DB, userId: string, from: string, to: string): number {
+  return db.fines
+    .filter((f) => f.userId === userId && f.ts.slice(0, 10) >= from && f.ts.slice(0, 10) <= to)
+    .reduce((s, f) => s + f.amount, 0);
 }
 export function pieceSumOf(db: DB, userId: string, from: string, to: string): number {
   return db.production
@@ -104,9 +131,11 @@ export function summarize(db: DB, user: User, from: string, to: string): SumRow 
   const short = Math.max(0, plan - fact);
   const piece = user.payMode === "piece" ? pieceSumOf(db, user.id, from, to) : 0;
   const pay = payFor(db, user, fact, ot, days);
+  const gross = user.payMode === "piece" ? piece : pay.total;
+  const fineSum = finesOf(db, user.id, from, to);
   return {
     user, planMin: plan, factMin: fact, otMin: ot, shortMin: short, late, days,
-    shifts: days, pieceSum: piece, salary: user.payMode === "piece" ? piece : pay.total,
+    shifts: days, pieceSum: piece, salary: gross, fineSum, net: gross - fineSum,
   };
 }
 export function summarizeAll(db: DB, from: string, to: string, workshopId?: string | null): SumRow[] {
@@ -184,6 +213,18 @@ interface StoreApi {
   uploadAttachment: (f: File) => Promise<Attachment>;
   askOllama: (prompt: string) => Promise<string>;
   can: (mod: ModuleId, device: Device) => boolean;
+  // штрафы, оценки, архив, периоды, избранное, план вне графика
+  addFine: (userId: string, amount: number, reason: string, periodId: string | null) => void;
+  removeFine: (id: string) => void;
+  addRating: (userId: string, month: string, points: number, note: string) => void;
+  archiveUser: (id: string, reason: string, tone: "pos" | "neg" | "neutral", note: string) => string | null;
+  restoreUser: (id: string) => void;
+  hardDeleteUser: (id: string) => string | null;
+  createPeriod: (kind: PayPeriod["kind"], from: string, to: string, label: string, status?: PayPeriod["status"]) => void;
+  setPeriodStatus: (id: string, status: PayPeriod["status"]) => void;
+  toggleFav: (postId: string) => void;
+  setPunchPlan: (punchId: string, plannedOut: number) => void;
+  serverHealth: () => Promise<{ ok: boolean; version?: number; uptime_sec?: number; port?: number; db_kb?: number; backups?: { name: string; size_kb: number }[] }>;
 }
 
 const Ctx = createContext<StoreApi | null>(null);
@@ -222,7 +263,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       const r = await fetch("./api/db", { cache: "no-store" });
       if (!r.ok) return false;
       const j = await r.json();
-      if (j && j.data && j.data.v === 5 && typeof j.version === "number") {
+      if (j && j.data && j.data.v === 6 && typeof j.version === "number") {
         if (!cancelled) applyRemote(j.data as DB, j.version);
         return true;
       }
@@ -277,11 +318,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     if (!me || (me.role !== "superadmin" && me.role !== "admin")) return;
     const tk = todayKey();
     const nm = nowMin();
-    const stale = db.punches.filter((p) => {
-      if (p.tout !== null) return false;
-      return p.date < tk || (p.date === tk && nm >= 240);
-    });
-    if (stale.length === 0) return;
+    const openAll = db.punches.filter((p) => p.tout === null);
+    const stale = openAll.filter((p) => p.date < tk || (p.date === tk && nm >= 240));
+    // вне графика с указанным «работаю до»: закрываем по плановому времени
+    const byPlan = openAll.filter((p) =>
+      p.plannedOut != null && !stale.includes(p) && (p.date < tk || nm >= p.plannedOut!));
+    if (stale.length === 0 && byPlan.length === 0) return;
     setDb((prev) => {
       const d: DB = JSON.parse(JSON.stringify(prev));
       for (const sp of stale) {
@@ -309,6 +351,25 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             d.notices.unshift({ id: uid(), audience: a.id, text: `${u?.name || "?"}: внеплановая смена ${fmtDateFull(p.date)} требует подтверждения часов.`, ts: new Date().toISOString(), readBy: [] }));
           d.audit.unshift({ id: uid(), ts: new Date().toISOString(), actor: "система", action: "Табель", details: `${u?.name || "?"}: внеплановая смена ${p.date} закрыта в 23:59, отправлена на согласование` });
         }
+      }
+      for (const sp of byPlan) {
+        const p = d.punches.find((x) => x.id === sp.id);
+        if (!p || p.tout !== null || p.plannedOut == null) continue;
+        const po = p.plannedOut as number;
+        p.tout = po;
+        p.source = "auto";
+        p.auto = "unscheduled";
+        p.resolution = "pending";
+        const u = userById(d, p.userId);
+        d.requests.unshift({
+          id: uid(), userId: p.userId, kind: "resolution", date: p.date,
+          note: `Вне графика: сотрудник планировал работать до ${fmtMin(po)} — смена закрыта по этому времени автоматически. Администратор, ${d.settings.camNote}`,
+          status: "pending", createdAt: new Date().toISOString(), punchId: p.id,
+        });
+        notify(d, p.userId, `Смена за ${fmtDateFull(p.date)} закрыта по вашему плановому времени (${fmtMin(po)}). Подтвердите часы в «Заявках».`);
+        d.users.filter((x) => x.role !== "employee").forEach((a) =>
+          notify(d, a.id, `${u?.name || "?"}: внеплановая смена закрыта по плану (${fmtMin(po)}). ${d.settings.camNote}`));
+        d.audit.unshift({ id: uid(), ts: new Date().toISOString(), actor: "система", action: "Табель", details: `${u?.name || "?"}: смена ${p.date} закрыта по плановому времени ${fmtMin(po)} (вне графика)` });
       }
       return d;
     });
@@ -368,12 +429,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       if (!me) return "Нет сессии";
       if (openPunchOf(db, me.id)) return "Смена уже открыта";
       const cell = db.schedule.find((s) => s.userId === me.id && s.date === todayKey());
+      const off = !cell || cell.type === "off" || cell.type === "vacation" || cell.type === "sick";
       up((d) => {
-        d.punches.push({ id: uid(), userId: me.id, date: todayKey(), tin: nowMin(), tout: null, source });
-        audit(d, source === "kiosk" ? "терминал" : me.name, "Отметка", `${me.name} — начало смены (${fmtMin(nowMin())})`);
+        d.punches.push({ id: uid(), userId: me.id, date: todayKey(), tin: nowMin(), tout: null, source, auto: off ? "unscheduled" : null });
+        audit(d, source === "kiosk" ? "терминал" : me.name, "Отметка", `${me.name} — начало смены (${fmtMin(nowMin())})${off ? " ВНЕ ГРАФИКА" : ""}`);
+        if (off) d.users.filter((x) => x.role !== "employee").forEach((a) =>
+          notify(d, a.id, `⚠ ${me.name} вышел(ла) на смену вне графика (${fmtMin(nowMin())}). ${d.settings.camNote}`));
       });
-      if (!cell || cell.type === "off" || cell.type === "vacation")
-        return "СМЕНА ОТКРЫТА, но сегодня вас нет в графике — смена потребует подтверждения администратором";
+      if (off) return "UNSCHEDULED";
       return null;
     },
     punchOut() {
@@ -670,7 +733,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       const me = meRef.current;
       if (!me) return;
       up((d) => {
-        d.posts.unshift({ id: uid(), userId: me.id, text, image, link, bg, animated, attachments, likes: [], comments: [], ts: new Date().toISOString(), pinned: false });
+        d.posts.unshift({ id: uid(), userId: me.id, text, image, link, bg, animated, attachments, likes: [], comments: [], favs: [], ts: new Date().toISOString(), pinned: false });
+        d.users
+          .filter((u) => u.id !== me.id && new RegExp(`@${u.username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text))
+          .forEach((u) => notify(d, u.id, `${me.name} упомянул(а) вас на стене: «${text.slice(0, 70) || "фото"}${text.length > 70 ? "…" : ""}»`));
         audit(d, me.name, "Стена", "Новая запись на стене");
       });
     },
@@ -784,9 +850,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       up((d) => { Object.assign(d.settings, patch); audit(d, who(), "Настройки", "Изменены настройки системы"); });
     },
     importAll(nd) {
-      if (!nd || nd.v !== 5 || !Array.isArray(nd.users) || !nd.users.some((u) => u.id === "u-root"))
-        return "Файл не похож на резервную копию «СменаЛАН» (v5)";
-      setDb(nd);
+      if (!nd || (nd.v !== 5 && nd.v !== 6) || !Array.isArray(nd.users) || !nd.users.some((u) => u.id === "u-root"))
+        return "Файл не похож на резервную копию «СменаЛАН» (v5/v6)";
+      setDb(migrate(nd));
       return null;
     },
     async uploadAttachment(f) {
@@ -834,6 +900,129 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       if (!me) return false;
       if (me.role === "superadmin") return true;
       return !!db.perms[mod]?.[me.role]?.[device];
+    },
+    addFine(userId, amount, reason, periodId) {
+      up((d) => {
+        d.fines.unshift({ id: uid(), userId, amount, reason, periodId, createdBy: meRef.current?.id || "", ts: new Date().toISOString() });
+        const u = userById(d, userId);
+        notify(d, userId, `Вам назначен штраф ${amount.toLocaleString("ru-RU")} ₽: ${reason}`);
+        audit(d, who(), "Штрафы", `${u?.name || "?"}: штраф ${amount} ₽ — ${reason}`);
+      });
+    },
+    removeFine(id) {
+      up((d) => {
+        const f = d.fines.find((x) => x.id === id);
+        d.fines = d.fines.filter((x) => x.id !== id);
+        const u = f && userById(d, f.userId);
+        if (f) notify(d, f.userId, `Штраф ${f.amount.toLocaleString("ru-RU")} ₽ снят (${f.reason})`);
+        audit(d, who(), "Штрафы", `Снят штраф ${u?.name || "?"} (${f?.amount || 0} ₽)`);
+      });
+    },
+    addRating(userId, month, points, note) {
+      up((d) => {
+        d.ratings = d.ratings.filter((r) => !(r.userId === userId && r.month === month));
+        d.ratings.unshift({ id: uid(), userId, month, points, note, by: meRef.current?.id || "", ts: new Date().toISOString() });
+        const u = userById(d, userId);
+        notify(d, userId, `Оценка за ${month}: ${points} баллов${note ? " — " + note : ""}`);
+        audit(d, who(), "Оценки", `${u?.name || "?"}: ${month} — ${points} баллов`);
+      });
+    },
+    archiveUser(id, reason, tone, note) {
+      const u = userById(db, id);
+      if (!u) return "Не найден";
+      if (u.role === "superadmin") return "Суперадмина архивировать нельзя";
+      up((d) => {
+        const x = d.users.find((y) => y.id === id)!;
+        x.active = false;
+        x.archived = true;
+        x.archivedAt = new Date().toISOString();
+        x.archiveReason = reason;
+        x.archiveTone = tone;
+        x.archiveNote = note;
+        audit(d, who(), "Архив", `${u.name}: перемещён в архив (${reason}, ${tone === "pos" ? "положительно" : tone === "neg" ? "отрицательно" : "нейтрально"})`);
+      });
+      return null;
+    },
+    restoreUser(id) {
+      up((d) => {
+        const x = d.users.find((y) => y.id === id);
+        if (x) {
+          x.active = true;
+          x.archived = false;
+          audit(d, who(), "Архив", `${x.name} восстановлен из архива`);
+        }
+      });
+    },
+    hardDeleteUser(id) {
+      const u = userById(db, id);
+      if (!u) return "Не найден";
+      if (meRef.current?.role !== "superadmin") return "Полное удаление доступно только суперадмину";
+      if (!u.archived) return "Сначала переместите сотрудника в архив";
+      const days = (Date.now() - new Date(u.archivedAt || 0).getTime()) / 86400000;
+      if (days < 30) return `Защита от ошибок: с момента архивации должно пройти 30 дней (осталось ${Math.ceil(30 - days)} дн.)`;
+      up((d) => {
+        d.users = d.users.filter((x) => x.id !== id);
+        d.punches = d.punches.filter((x) => x.userId !== id);
+        d.schedule = d.schedule.filter((x) => x.userId !== id);
+        d.requests = d.requests.filter((x) => x.userId !== id && x.targetUserId !== id);
+        d.fines = d.fines.filter((x) => x.userId !== id);
+        d.ratings = d.ratings.filter((x) => x.userId !== id);
+        audit(d, who(), "Архив", `${u.name} удалён из архива безвозвратно (по истечении 30 дней)`);
+      });
+      return null;
+    },
+    createPeriod(kind, from, to, label, status) {
+      up((d) => {
+        const st = status || "open";
+        d.periods.unshift({ id: uid(), kind, from, to, label, status: st, approvedBy: st !== "open" ? meRef.current?.id : undefined, ts: new Date().toISOString() });
+        audit(d, who(), "Расчёты", `Расчётный период «${label}» (${from} — ${to})${st === "approved" ? " — подтверждён и передан бухгалтерии" : ""}`);
+        if (st === "approved")
+          d.users.filter((x) => x.role === "accountant").forEach((a) =>
+            notify(d, a.id, `Период «${label}» подтверждён администратором — расчёты доступны в разделе «Расчёты»`));
+      });
+    },
+    setPeriodStatus(id, status) {
+      up((d) => {
+        const p = d.periods.find((x) => x.id === id);
+        if (!p) return;
+        p.status = status;
+        if (status !== "open") p.approvedBy = meRef.current?.id;
+        audit(d, who(), "Расчёты", `Период «${p.label}»: статус ${status === "approved" ? "подтверждён" : status === "paid" ? "выплачен" : "открыт"}`);
+        if (status === "approved")
+          d.users.filter((x) => x.role === "accountant").forEach((a) =>
+            notify(d, a.id, `Период «${p.label}» подтверждён администратором — расчёты доступны в разделе «Расчёты»`));
+      });
+    },
+    toggleFav(postId) {
+      const me = meRef.current;
+      if (!me) return;
+      up((d) => {
+        const p = d.posts.find((x) => x.id === postId);
+        if (!p) return;
+        p.favs = p.favs || [];
+        p.favs = p.favs.includes(me.id) ? p.favs.filter((x) => x !== me.id) : [...p.favs, me.id];
+      });
+    },
+    setPunchPlan(punchId, plannedOut) {
+      up((d) => {
+        const p = d.punches.find((x) => x.id === punchId);
+        if (!p) return;
+        p.plannedOut = plannedOut;
+        const u = userById(d, p.userId);
+        audit(d, who(), "Табель", `${u?.name || "?"}: план вне графика — работать до ${fmtMin(plannedOut)}`);
+        d.users.filter((x) => x.role !== "employee").forEach((a) =>
+          notify(d, a.id, `${u?.name || "?"} вне графика: планирует работать до ${fmtMin(plannedOut)}. Если не отметится — смена закроется по плану. ${d.settings.camNote}`));
+      });
+    },
+    async serverHealth() {
+      try {
+        const r = await fetch("./api/health", { cache: "no-store" });
+        if (!r.ok) return { ok: false };
+        const j = await r.json();
+        return { ok: true, ...j };
+      } catch {
+        return { ok: false };
+      }
     },
   };
 

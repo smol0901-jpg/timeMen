@@ -11,6 +11,8 @@ import ProductionView from "./screens/production";
 import OrgView from "./screens/org";
 import AIView from "./screens/ai";
 import HelpView from "./screens/help";
+import PayrollView from "./screens/payroll";
+import { ArchiveView } from "./screens/hr";
 import FeedView from "./components/feed";
 import ChatView from "./components/chat";
 import GamesView from "./screens/games";
@@ -34,6 +36,23 @@ function Root() {
   if (kiosk) return <Kiosk onExit={() => setKiosk(false)} />;
   if (!me) return <Login onKiosk={() => setKiosk(true)} />;
   return <Shell onKiosk={() => setKiosk(true)} />;
+}
+
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { err: string | null }> {
+  state = { err: null as string | null };
+  static getDerivedStateFromError(e: unknown) { return { err: e instanceof Error ? e.message : String(e) }; }
+  render() {
+    if (this.state.err)
+      return (
+        <div className="card max-w-lg mx-auto mt-10 p-6 text-center anim-pop">
+          <div className="mx-auto w-12 h-12 rounded-2xl bg-bad-soft text-bad grid place-items-center"><I n="warn" size={22} /></div>
+          <b className="font-display text-sm block mt-3">Экран не смог отрисоваться</b>
+          <p className="text-[12.5px] text-mute font-bold mt-1.5">Ошибка: {this.state.err}. Данные не пострадали — база на сервере цела.</p>
+          <button className="btn btn-pri mt-4" onClick={() => { this.setState({ err: null }); window.location.reload(); }}>Перезагрузить приложение</button>
+        </div>
+      );
+    return this.props.children;
+  }
 }
 
 function Shell({ onKiosk }: { onKiosk: () => void }) {
@@ -86,6 +105,8 @@ function Shell({ onKiosk }: { onKiosk: () => void }) {
       case "org": return <OrgView />;
       case "reports": return <ReportsView />;
       case "ai": return <AIView />;
+      case "payroll": return <PayrollView />;
+      case "archive": return <ArchiveView />;
       case "reminders": return <RemindersView />;
       case "dataio": return <DataIOView />;
       case "permissions": return <PermsView />;
@@ -96,12 +117,16 @@ function Shell({ onKiosk }: { onKiosk: () => void }) {
     }
   })();
 
+  const pendCount = isAdmin ? db.requests.filter((r) => r.status === "pending").length : 0;
   const NavBtn = ({ m, horizontal }: { m: (typeof MODULES)[number]; horizontal?: boolean }) => (
     <button onClick={() => go(m.id)}
-      className={`flex items-center gap-2.5 rounded-lg font-bold transition-all ${horizontal ? "flex-col gap-1 px-2 py-1.5 text-[9.5px] min-w-[58px]" : "px-3 h-9.5 h-10 text-[13px] w-full text-left"}
+      className={`relative flex items-center gap-2.5 rounded-lg font-bold transition-all ${horizontal ? "flex-col gap-1 px-2 py-1.5 text-[9.5px] min-w-[58px]" : "px-3 h-10 text-[13px] w-full text-left"}
       ${view === m.id ? (horizontal ? "text-accent" : "bg-accent text-white shadow-[0_3px_12px_-4px_rgba(229,111,36,0.7)]") : horizontal ? "text-steel-200" : "text-steel-200 hover:bg-steel-800 hover:text-paper"}`}>
       <I n={m.icon} size={horizontal ? 18 : 16} />
       <span className={horizontal ? "truncate max-w-[56px]" : "truncate"}>{m.label}</span>
+      {horizontal && m.id === "requests" && pendCount > 0 && (
+        <span className="absolute top-0 right-1.5 min-w-[15px] h-[15px] px-0.5 rounded-full bg-bad text-white text-[9px] font-extrabold grid place-items-center">{pendCount}</span>
+      )}
     </button>
   );
 
@@ -146,7 +171,7 @@ function Shell({ onKiosk }: { onKiosk: () => void }) {
               <Avatar u={me} size={34} />
               <div className="min-w-0 flex-1">
                 <b className="text-[12.5px] block truncate">{me.name}</b>
-                <span className="text-[10px] font-extrabold text-steel-400 uppercase">{me.role === "superadmin" ? "суперадмин" : me.role === "admin" ? "админ" : "сотрудник"}</span>
+                <span className="text-[10px] font-extrabold text-steel-400 uppercase">{me.role === "superadmin" ? "суперадмин" : me.role === "admin" ? "админ" : me.role === "accountant" ? "бухгалтерия" : "сотрудник"}</span>
               </div>
               <button className="w-8 h-8 rounded-lg grid place-items-center text-steel-400 hover:text-bad hover:bg-steel-700 transition" onClick={logout} title="Выйти"><I n="logout" size={15} /></button>
             </div>
@@ -181,13 +206,13 @@ function Shell({ onKiosk }: { onKiosk: () => void }) {
           </div>
         )}
 
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6">{content}</main>
+        <main className="flex-1 overflow-y-auto p-3 sm:p-6"><ErrorBoundary key={view}>{content}</ErrorBoundary></main>
       </div>
 
       {!isDesktop && (
-        <nav className="bg-steel-950 text-paper flex items-stretch justify-around px-1 py-1.5 shrink-0 sticky bottom-0 z-40 border-t border-steel-700 overflow-x-auto dark-scroll">
-          {allowed.slice(0, 7).map((m) => <NavBtn key={m.id} m={m} horizontal />)}
-          {allowed.length > 7 && (
+        <nav className="bg-steel-950 text-paper flex items-stretch justify-around px-1 pt-1.5 pb-[max(6px,env(safe-area-inset-bottom))] shrink-0 sticky bottom-0 z-40 border-t border-steel-700 overflow-x-auto dark-scroll">
+          {allowed.slice(0, 6).map((m) => <NavBtn key={m.id} m={m} horizontal />)}
+          {allowed.length > 6 && (
             <button onClick={() => setNav(true)} className={`flex flex-col items-center gap-1 px-2 py-1.5 text-[9.5px] font-bold min-w-[58px] ${nav ? "text-accent" : "text-steel-200"}`}>
               <I n="grid" size={18} />Ещё
             </button>

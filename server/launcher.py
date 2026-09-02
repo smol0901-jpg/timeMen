@@ -316,8 +316,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 body = self._body()
                 if not body or "data" not in body:
                     return self._send(400, {"error": "need {data}"})
-                if not isinstance(body["data"], dict) or body["data"].get("v") != 5:
-                    return self._send(400, {"error": "bad db version (need v=5)"})
+                if not isinstance(body["data"], dict) or body["data"].get("v") not in (5, 6):
+                    return self._send(400, {"error": "bad db version (need v=5 or v=6)"})
                 ver = set_db(body["data"], body.get("version", 0))
                 return self._send(200, {"ok": True, "version": ver})
             if p == "/api/sensors":

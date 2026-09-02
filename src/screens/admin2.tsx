@@ -61,8 +61,9 @@ export function RequestsAdmin() {
 
 // ================= ОТЧЁТЫ =================
 export function ReportsView() {
-  const { db } = useStore();
+  const { db, me, createPeriod } = useStore();
   const { toast } = useToast();
+  const isAdmin = me?.role === "admin" || me?.role === "superadmin";
   const [tab, setTab] = useState("day");
   const tk = todayKey();
   const [day, setDay] = useState(tk);
@@ -114,6 +115,13 @@ export function ReportsView() {
           </select>
         )}
         <span className="ml-auto flex gap-2 flex-wrap">
+          {isAdmin && tab !== "prod" && (
+            <button className="btn btn-dark btn-sm" title="Подтвердить период и открыть расчёты бухгалтерии" onClick={() => {
+              const kind = tab === "day" ? "day" : tab === "week" ? "week" : tab === "month" ? "month" : "season";
+              createPeriod(kind as "day" | "week" | "month" | "season", rf, rt, label, "approved");
+              toast("Период подтверждён и передан бухгалтерии", "ok");
+            }}><I n="coin" size={14} />В бухгалтерию</button>
+          )}
           {tab !== "prod" && tab !== "payroll" && (
             <>
               <button className="btn btn-ghost btn-sm" onClick={() => { exportAttendance(db, rf, rt, tab === "day" ? "ежедневный" : tab === "week" ? "еженедельный" : "ежемесячный"); toast("Excel сохранён", "ok"); }}><I n="xls" size={14} />Excel</button>
@@ -284,7 +292,7 @@ export function PermsView() {
   const { db, setPerm, me } = useStore();
   const { toast } = useToast();
   if (me?.role !== "superadmin") return <div className="card"><Empty icon="shield" title="Раздел суперадмина" text="Матрицей прав управляет только суперадминистратор." /></div>;
-  const roles: Role[] = ["admin", "employee"];
+  const roles: Role[] = ["admin", "accountant", "employee"];
   const devs: Device[] = ["desktop", "mobile"];
   return (
     <div className="grid gap-4 max-w-4xl">
@@ -326,10 +334,20 @@ export function PermsView() {
 
 // ================= ДАННЫЕ =================
 export function DataIOView() {
-  const { db, importAll } = useStore();
+  const { db, importAll, serverHealth } = useStore();
   const { toast } = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
   const [confirmReset, setConfirmReset] = useState(false);
+  const [diag, setDiag] = useState<{ ok: boolean; version?: number; uptime_sec?: number; port?: number; db_kb?: number; backups?: { name: string; size_kb: number }[]; ms?: number } | null>(null);
+  const [checking, setChecking] = useState(false);
+  const runDiag = async () => {
+    setChecking(true);
+    const t0 = performance.now();
+    const r = await serverHealth();
+    setDiag({ ...r, ms: Math.round(performance.now() - t0) });
+    setChecking(false);
+  };
+  React.useEffect(() => { runDiag(); const t = setInterval(runDiag, 15000); return () => clearInterval(t); }, []);
 
   const downloadJson = () => {
     const blob = new Blob([JSON.stringify(db, null, 2)], { type: "application/json" });
@@ -341,7 +359,48 @@ export function DataIOView() {
   };
 
   return (
-    <div className="grid lg:grid-cols-3 gap-4 items-start max-w-5xl">
+    <div className="grid lg:grid-cols-2 gap-4 items-start max-w-5xl">
+      <div className="card p-5">
+        <h3 className="font-display text-sm font-semibold mb-3 flex items-center gap-2"><I n="zap" size={16} />Автоконтроль сервера</h3>
+        <div className={`rounded-xl border p-4 ${diag?.ok ? "border-ok/50 bg-ok-soft/50" : "border-bad/50 bg-bad-soft/50"}`}>
+          <b className="text-sm flex items-center gap-2">
+            <span className={`w-2.5 h-2.5 rounded-full ${diag?.ok ? "bg-ok pulse-ok" : "bg-bad blink"}`} />
+            {diag?.ok ? "Сервер работоспособен" : checking ? "Проверка…" : "Сервер недоступен — локальный режим"}
+          </b>
+          {diag?.ok && (
+            <div className="grid grid-cols-2 gap-2 mt-3 text-[12px] font-bold text-mute">
+              <span>Версия базы: <b className="text-ink">v{diag.version}</b></span>
+              <span>Порт: <b className="text-ink">{diag.port}</b></span>
+              <span>Аптайм: <b className="text-ink">{diag.uptime_sec ? `${Math.floor(diag.uptime_sec / 3600)} ч ${Math.floor((diag.uptime_sec % 3600) / 60)} мин` : "—"}</b></span>
+              <span>База на диске: <b className="text-ink">{diag.db_kb ? `${(diag.db_kb / 1024).toFixed(1)} МБ` : "—"}</b></span>
+              <span>Отклик: <b className="text-ink">{diag.ms} мс</b></span>
+              <span>Резервных копий: <b className="text-ink">{diag.backups?.length ?? 0}</b></span>
+            </div>
+          )}
+          <div className="flex gap-2 mt-3 flex-wrap">
+            <button className="btn btn-ghost btn-sm" onClick={runDiag} disabled={checking}><I n="history" size={13} />Проверить сейчас</button>
+            {diag?.ok && (
+              <button className="btn btn-ghost btn-sm" onClick={async () => {
+                try {
+                  const r = await fetch("./api/backup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+                  toast(r.ok ? "Резервная копия создана на сервере" : "Сервер отклонил запрос (нужен токен в настройках)", r.ok ? "ok" : "bad");
+                  runDiag();
+                } catch { toast("Не удалось создать копию", "bad"); }
+              }}><I n="download" size={13} />Копия сейчас</button>
+            )}
+          </div>
+        </div>
+        {diag?.ok && diag.backups && diag.backups.length > 0 && (
+          <div className="mt-3 grid gap-1.5">
+            {diag.backups.slice(0, 5).map((b) => (
+              <div key={b.name} className="flex items-center gap-2 text-[11.5px] font-bold text-mute border border-line rounded-lg px-3 py-1.5">
+                <I n="file" size={13} /><span className="truncate">{b.name}</span><span className="ml-auto tnum">{(b.size_kb / 1024).toFixed(1)} МБ</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <p className="text-[11px] font-bold text-mute mt-3">Автопроверка каждые 15 секунд. При падении сервера клиенты продолжают работать локально и синхронизируются при восстановлении.</p>
+      </div>
       <div className="card p-5">
         <h3 className="font-display text-sm font-semibold mb-2 flex items-center gap-2"><I n="file" size={16} />Резервная копия JSON</h3>
         <p className="text-[12px] text-mute font-bold leading-relaxed mb-3">Полная база: люди, отметки, график, выработка, чаты, журналы. Хранится бессрочно; сервер дополнительно делает копии автоматически каждую неделю.</p>
@@ -458,6 +517,23 @@ export function SettingsView() {
         </div>
         <div className="mt-5 grid gap-3">
           <Toggle checked={s.kioskFree} onChange={(v) => ch("kioskFree", v)} label="Терминал без пароля" sub="отметка на киоске одним касанием" />
+          <Toggle checked={s.bestOn} onChange={(v) => ch("bestOn", v)} label="Бейдж «Сотрудник месяца»" sub="виден на дашборде; назначение — на дашборде" />
+        </div>
+        <div className="mt-5">
+          <span className="lbl">Оформление киоска-терминала (5 тем)</span>
+          <div className="flex gap-2 flex-wrap">
+            {([["steel", "Сталь", "#0e1116", "#e56f24"], ["mint", "Мята", "#0b1f1a", "#34d399"], ["sunset", "Закат", "#221208", "#f59e0b"], ["ocean", "Океан", "#091525", "#38bdf8"], ["light", "Светлая", "#e9edf1", "#e56f24"]] as const).map(([k, n, bgc, acc]) => (
+              <button key={k} onClick={() => ch("kioskTheme", k)}
+                className={`flex items-center gap-2 rounded-xl border-2 px-3 py-2 font-bold text-[12px] transition active:scale-95 ${s.kioskTheme === k ? "!border-ink" : "border-line hover:border-steel-400"}`}>
+                <span className="w-5 h-5 rounded-full border border-line" style={{ background: `linear-gradient(135deg, ${bgc} 55%, ${acc} 55%)` }} />{n}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="mt-5">
+          <Field label="Подсказка админу при внеплановых сменах" hint="Добавляется в уведомления «проверить камеры»">
+            <input className="input" value={s.camNote} onChange={(e) => ch("camNote", e.target.value)} />
+          </Field>
         </div>
       </div>
       <div className="card p-6">
