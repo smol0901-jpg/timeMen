@@ -1,265 +1,261 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { StoreProvider, useStore, myNotices } from "./lib/store";
+import React, { useEffect, useMemo, useState } from "react";
+import { StoreProvider, useStore, myNotices, remindersFor } from "./lib/store";
 import { MODULES, ModuleId } from "./lib/types";
-import { ToastProvider, useToast, I, Avatar, Logo, OnlineDot, RoleBadge } from "./components/ui";
+import { ToastProvider, I, Avatar, Logo, OnlineDot } from "./components/ui";
 import Login from "./components/Login";
 import Kiosk from "./components/Kiosk";
-import FeedView from "./components/feed";
 import { PunchView, StatsView, ScheduleView, RequestsView, ProfileView } from "./screens/employee";
 import { DashboardView, EmployeesView, ScheduleEditor } from "./screens/admin";
-import { RequestsAdminView, ReportsView, PermissionsView, DataIOView, AuditView, SettingsView } from "./screens/admin2";
-import { relTime } from "./lib/time";
+import { RequestsAdmin, ReportsView, PermsView, DataIOView, AuditView, RemindersView, SettingsView } from "./screens/admin2";
+import ProductionView from "./screens/production";
+import OrgView from "./screens/org";
+import AIView from "./screens/ai";
+import HelpView from "./screens/help";
+import FeedView from "./components/feed";
+import ChatView from "./components/chat";
+import GamesView from "./screens/games";
+import { relTime, todayKey } from "./lib/time";
+
+type LayoutPref = "auto" | "desktop" | "mobile";
 
 export default function App() {
   return (
     <StoreProvider>
       <ToastProvider>
-        <Shell />
+        <Root />
       </ToastProvider>
     </StoreProvider>
   );
 }
 
-type LayoutPref = "auto" | "desktop" | "mobile";
-
-function Shell() {
+function Root() {
   const { me } = useStore();
   const [kiosk, setKiosk] = useState(false);
-  const [pref, setPref] = useState<LayoutPref>(() => (localStorage.getItem("smenalan.layout") as LayoutPref) || "auto");
-  const [winW, setWinW] = useState(window.innerWidth);
-
-  useEffect(() => {
-    const h = () => setWinW(window.innerWidth);
-    window.addEventListener("resize", h);
-    return () => window.removeEventListener("resize", h);
-  }, []);
-  useEffect(() => localStorage.setItem("smenalan.layout", pref), [pref]);
-
-  const isMobile = pref === "auto" ? winW < 980 : pref === "mobile";
-
   if (kiosk) return <Kiosk onExit={() => setKiosk(false)} />;
   if (!me) return <Login onKiosk={() => setKiosk(true)} />;
-  return <AppShell key={me.id + String(isMobile)} isMobile={isMobile} pref={pref} setPref={setPref} />;
+  return <Shell onKiosk={() => setKiosk(true)} />;
 }
 
-function AppShell({ isMobile, pref, setPref }: { isMobile: boolean; pref: LayoutPref; setPref: (p: LayoutPref) => void }) {
-  const { db, me, can, logout } = useStore();
-  const device = isMobile ? "mobile" : "desktop";
-  const nav = useMemo(() => MODULES.filter((m) => can(m.id, device)), [db.perms, me?.role, device]); // eslint-disable-line
-  const [view, setView] = useState<ModuleId>(() => nav[0]?.id || "profile");
-  const [reqDraft, setReqDraft] = useState<{ kind: "swap" | "vacation" | "extra"; date?: string } | null>(null);
-  const [more, setMore] = useState(false);
+function Shell({ onKiosk }: { onKiosk: () => void }) {
+  const { db, me, can, online, logout, markNoticesRead } = useStore();
+  const [view, setView] = useState<ModuleId>("punch");
+  const [pref, setPref] = useState<LayoutPref>("auto");
+  const [wide, setWide] = useState(() => window.innerWidth >= 1024);
+  const [bell, setBell] = useState(false);
+  const [nav, setNav] = useState(false);
+  const [installEvt, setInstallEvt] = useState<Event & { prompt?: () => void } | null>(null);
 
   useEffect(() => {
-    if (!nav.some((m) => m.id === view)) setView(nav[0]?.id || "profile");
-  }, [nav, view]);
+    const h = () => setWide(window.innerWidth >= 1024);
+    window.addEventListener("resize", h);
+    const bi = (e: Event) => { e.preventDefault(); setInstallEvt(e as never); };
+    window.addEventListener("beforeinstallprompt", bi);
+    return () => { window.removeEventListener("resize", h); window.removeEventListener("beforeinstallprompt", bi); };
+  }, []);
+
+  const device = pref === "auto" ? (wide ? "desktop" : "mobile") : pref;
+  const allowed = useMemo(() => MODULES.filter((m) => can(m.id, device)), [db, me, device]);
+  const isDesktop = device === "desktop";
+
+  useEffect(() => {
+    if (!allowed.some((m) => m.id === view) && allowed.length) setView(allowed[0].id);
+  }, [allowed, view]);
 
   if (!me) return null;
-  const isAdminSide = me.role !== "employee";
-  const userNav = nav.filter((m) => m.group === "user");
-  const adminNav = nav.filter((m) => m.group === "admin");
+  const notices = myNotices(db, me);
+  const unread = notices.filter((n) => !n.readBy.includes(me.id));
+  const myRem = remindersFor(db, me).filter((r) => r.due <= todayKey() && !r.doneBy.includes(me.id));
   const title = MODULES.find((m) => m.id === view)?.label || "";
+  const isAdmin = me.role !== "employee";
+
+  const go = (v: ModuleId) => { setView(v); setNav(false); setBell(false); };
 
   const content = (() => {
     switch (view) {
       case "punch": return <PunchView />;
       case "stats": return <StatsView />;
-      case "schedule": return isAdminSide ? <ScheduleEditor /> : <ScheduleView onAskSwap={(d) => { setReqDraft({ kind: "swap", date: d }); setView("requests"); }} />;
-      case "requests": return isAdminSide ? <RequestsAdminView /> : <RequestsView draft={reqDraft} onDraftUsed={() => setReqDraft(null)} />;
+      case "schedule": return isDesktop && isAdmin ? <ScheduleEditor /> : <ScheduleView />;
+      case "requests": return isAdmin && isDesktop ? <RequestsAdmin /> : <RequestsView />;
       case "feed": return <FeedView />;
+      case "chat": return <ChatView />;
+      case "production": return <ProductionView />;
+      case "games": return <GamesView />;
       case "profile": return <ProfileView />;
-      case "dashboard": return <DashboardView go={(v) => setView(v as ModuleId)} />;
+      case "dashboard": return <DashboardView />;
       case "employees": return <EmployeesView />;
+      case "org": return <OrgView />;
       case "reports": return <ReportsView />;
+      case "ai": return <AIView />;
+      case "reminders": return <RemindersView />;
       case "dataio": return <DataIOView />;
-      case "permissions": return <PermissionsView />;
+      case "permissions": return <PermsView />;
       case "audit": return <AuditView />;
       case "settings": return <SettingsView />;
+      case "help": return <HelpView />;
+      default: return null;
     }
   })();
 
-  if (isMobile) {
-    const tabs = nav.slice(0, 5);
-    const rest = nav.slice(5);
-    return (
-      <div className="h-full flex flex-col">
-        <header className="bg-steel-900 text-paper px-4 py-3 flex items-center gap-3 shrink-0 z-30">
-          <Logo size={32} />
-          <div className="min-w-0">
-            <div className="font-display font-bold text-[13px] leading-none truncate">{title}</div>
-            <div className="text-[9.5px] font-bold text-steel-400 uppercase tracking-widest mt-1 truncate">СменаЛАН · {me.dept}</div>
-          </div>
+  const NavBtn = ({ m, horizontal }: { m: (typeof MODULES)[number]; horizontal?: boolean }) => (
+    <button onClick={() => go(m.id)}
+      className={`flex items-center gap-2.5 rounded-lg font-bold transition-all ${horizontal ? "flex-col gap-1 px-2 py-1.5 text-[9.5px] min-w-[58px]" : "px-3 h-9.5 h-10 text-[13px] w-full text-left"}
+      ${view === m.id ? (horizontal ? "text-accent" : "bg-accent text-white shadow-[0_3px_12px_-4px_rgba(229,111,36,0.7)]") : horizontal ? "text-steel-200" : "text-steel-200 hover:bg-steel-800 hover:text-paper"}`}>
+      <I n={m.icon} size={horizontal ? 18 : 16} />
+      <span className={horizontal ? "truncate max-w-[56px]" : "truncate"}>{m.label}</span>
+    </button>
+  );
+
+  const userMods = allowed.filter((m) => m.group === "user");
+  const adminMods = allowed.filter((m) => m.group === "admin");
+
+  return (
+    <div className="h-full flex flex-col lg:flex-row">
+      {!isDesktop && (
+        <div className="bg-steel-950 text-paper px-4 py-2.5 flex items-center gap-3 shrink-0 sticky top-0 z-40">
+          <Logo size={30} />
+          <b className="font-display text-[13px] tracking-tight">СМЕНА<span className="text-accent">ЛАН</span></b>
+          <OnlineDot />
           <div className="ml-auto flex items-center gap-1.5">
-            <OnlineDot />
-            <Bell />
-            <button className="w-9 h-9 rounded-full grid place-items-center" onClick={() => setView("profile")}><Avatar u={me} size={32} /></button>
+            <BellBtn bell={bell} setBell={setBell} unread={unread.length + myRem.length} notices={notices} me={me} onRead={markNoticesRead} reminders={myRem} />
+            {isAdmin && <button className="btn btn-sm btn-ghost !border-steel-600 !bg-steel-800 !text-steel-200 !px-2" onClick={onKiosk} title="Режим терминала"><I n="desk" size={14} /></button>}
+            <button className="w-8 h-8 rounded-full grid place-items-center" onClick={() => go("profile")}><Avatar u={me} size={30} /></button>
           </div>
-        </header>
+        </div>
+      )}
 
-        <main className="flex-1 overflow-y-auto p-3.5 sm:p-5 pb-24">
-          <div key={view} className="anim-rise">{content}</div>
-        </main>
+      {isDesktop && (
+        <aside className="w-60 shrink-0 bg-steel-950 text-paper flex flex-col sticky top-0 h-screen">
+          <div className="flex items-center gap-3 px-4 py-4 border-b border-steel-700">
+            <Logo size={38} />
+            <div>
+              <b className="font-display text-sm tracking-tight block leading-none">СМЕНА<span className="text-accent">ЛАН</span></b>
+              <span className="text-[9.5px] font-extrabold text-steel-400 uppercase tracking-[0.16em]">сервер учёта смен</span>
+            </div>
+          </div>
+          <nav className="flex-1 overflow-y-auto dark-scroll px-3 py-3 grid gap-0.5 content-start">
+            <span className="text-[9.5px] font-extrabold uppercase tracking-[0.16em] text-steel-400 px-3 pt-1 pb-2">Работа</span>
+            {userMods.map((m) => <NavBtn key={m.id} m={m} />)}
+            {adminMods.length > 0 && <span className="text-[9.5px] font-extrabold uppercase tracking-[0.16em] text-steel-400 px-3 pt-4 pb-2">Управление</span>}
+            {adminMods.map((m) => <NavBtn key={m.id} m={m} />)}
+          </nav>
+          <div className="p-3 border-t border-steel-700 grid gap-2">
+            <OnlineDot />
+            {isAdmin && <button className="btn btn-sm btn-ghost !border-steel-600 !bg-steel-800 !text-steel-200" onClick={onKiosk}><I n="desk" size={14} />Режим терминала</button>}
+            {installEvt && <button className="btn btn-sm btn-soft" onClick={() => (installEvt as { prompt?: () => void }).prompt?.()}><I n="phone" size={14} />Установить PWA</button>}
+            <div className="flex items-center gap-2.5 bg-steel-800 rounded-xl px-3 py-2.5">
+              <Avatar u={me} size={34} />
+              <div className="min-w-0 flex-1">
+                <b className="text-[12.5px] block truncate">{me.name}</b>
+                <span className="text-[10px] font-extrabold text-steel-400 uppercase">{me.role === "superadmin" ? "суперадмин" : me.role === "admin" ? "админ" : "сотрудник"}</span>
+              </div>
+              <button className="w-8 h-8 rounded-lg grid place-items-center text-steel-400 hover:text-bad hover:bg-steel-700 transition" onClick={logout} title="Выйти"><I n="logout" size={15} /></button>
+            </div>
+          </div>
+        </aside>
+      )}
 
-        <nav className="fixed bottom-0 inset-x-0 bg-steel-900 text-steel-200 border-t border-steel-700 flex z-40 pb-[env(safe-area-inset-bottom)]">
-          {tabs.map((m) => (
-            <button key={m.id} onClick={() => setView(m.id)}
-              className={`flex-1 flex flex-col items-center gap-1 py-2.5 text-[9.5px] font-extrabold transition ${view === m.id ? "text-accent" : "hover:text-paper"}`}>
-              <I n={m.icon} size={19} />{m.label.split(" ")[0]}
-            </button>
-          ))}
-          {rest.length > 0 && (
-            <button onClick={() => setMore(true)} className={`flex-1 flex flex-col items-center gap-1 py-2.5 text-[9.5px] font-extrabold transition ${rest.some((m) => m.id === view) ? "text-accent" : "hover:text-paper"}`}>
-              <I n="menu" size={19} />Ещё
+      <div className="flex-1 min-w-0 flex flex-col">
+        {isDesktop && (
+          <header className="bg-surface/90 backdrop-blur border-b border-line px-6 py-3 flex items-center gap-4 sticky top-0 z-30">
+            <h1 className="font-display text-[17px] font-semibold tracking-tight">{title}</h1>
+            <div className="ml-auto flex items-center gap-3">
+              <div className="flex items-center bg-paper border border-line rounded-lg p-0.5 gap-0.5">
+                {([["auto", "info", "Авто"], ["desktop", "desk", "ПК"], ["mobile", "phone", "PWA"]] as [LayoutPref, string, string][]).map(([p, ic, l]) => (
+                  <button key={p} onClick={() => setPref(p)}
+                    className={`inline-flex items-center gap-1.5 rounded-md px-2.5 h-7 text-[11px] font-extrabold transition ${pref === p ? "bg-steel-900 text-paper shadow" : "text-mute hover:text-ink"}`}>
+                    <I n={ic} size={12} />{l}
+                  </button>
+                ))}
+              </div>
+              <BellBtn bell={bell} setBell={setBell} unread={unread.length + myRem.length} notices={notices} me={me} onRead={markNoticesRead} reminders={myRem} />
+              <button className="w-9 h-9 rounded-full grid place-items-center" onClick={() => go("profile")}><Avatar u={me} size={34} /></button>
+            </div>
+          </header>
+        )}
+
+        {!online && (
+          <div className="bg-warn-soft border-b border-warn/30 px-4 sm:px-6 py-2 flex items-center gap-2.5 flex-wrap">
+            <I n="wifi" size={15} className="text-warn" />
+            <span className="text-[12px] font-extrabold text-warn">Локальный режим: LAN-сервер недоступен — данные пока только на этом устройстве.</span>
+            {can("help", device) && <button className="btn btn-sm btn-ghost !h-7 !text-[11px]" onClick={() => go("help")}><I n="help" size={12} />Инструкция по запуску</button>}
+          </div>
+        )}
+
+        <main className="flex-1 overflow-y-auto p-4 sm:p-6">{content}</main>
+      </div>
+
+      {!isDesktop && (
+        <nav className="bg-steel-950 text-paper flex items-stretch justify-around px-1 py-1.5 shrink-0 sticky bottom-0 z-40 border-t border-steel-700 overflow-x-auto dark-scroll">
+          {allowed.slice(0, 7).map((m) => <NavBtn key={m.id} m={m} horizontal />)}
+          {allowed.length > 7 && (
+            <button onClick={() => setNav(true)} className={`flex flex-col items-center gap-1 px-2 py-1.5 text-[9.5px] font-bold min-w-[58px] ${nav ? "text-accent" : "text-steel-200"}`}>
+              <I n="grid" size={18} />Ещё
             </button>
           )}
         </nav>
+      )}
 
-        {more && (
-          <div className="fixed inset-0 z-50 flex items-end" onClick={() => setMore(false)}>
-            <div className="absolute inset-0 bg-steel-950/60" />
-            <div className="relative w-full bg-surface rounded-t-2xl p-4 pb-8 anim-pop" onClick={(e) => e.stopPropagation()}>
-              <div className="w-10 h-1 rounded-full bg-line mx-auto mb-4" />
-              <div className="grid grid-cols-3 gap-2">
-                {rest.map((m) => (
-                  <button key={m.id} onClick={() => { setView(m.id); setMore(false); }}
-                    className={`card p-3.5 flex flex-col items-center gap-2 text-xs font-extrabold transition ${view === m.id ? "!border-accent text-accent-deep" : "hover:border-steel-400"}`}>
-                    <I n={m.icon} size={20} />{m.label}
-                  </button>
-                ))}
-                <button onClick={() => { logout(); }} className="card p-3.5 flex flex-col items-center gap-2 text-xs font-extrabold text-bad hover:!border-bad">
-                  <I n="logout" size={20} />Выйти
+      {nav && !isDesktop && (
+        <div className="fixed inset-0 z-[60] bg-steel-950/70 backdrop-blur-sm p-4 overflow-y-auto" onClick={() => setNav(false)}>
+          <div className="card !bg-steel-900 !border-steel-700 p-4 max-w-sm mx-auto mt-10 anim-pop" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <b className="font-display text-sm text-paper">Все разделы</b>
+              <button className="w-8 h-8 rounded-lg grid place-items-center text-steel-200 hover:bg-steel-700" onClick={() => setNav(false)}><I n="x" size={16} /></button>
+            </div>
+            <div className="grid grid-cols-3 gap-1.5">
+              {allowed.map((m) => (
+                <button key={m.id} onClick={() => go(m.id)}
+                  className={`flex flex-col items-center gap-1.5 rounded-xl px-2 py-3 text-[10px] font-extrabold transition ${view === m.id ? "bg-accent text-white" : "bg-steel-800 text-steel-200 hover:bg-steel-700"}`}>
+                  <I n={m.icon} size={19} />{m.label}
                 </button>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  // ---- десктоп: админка ----
-  return (
-    <div className="h-full flex">
-      <aside className="w-[232px] shrink-0 bg-steel-900 text-steel-200 flex flex-col">
-        <div className="px-5 pt-5 pb-4 flex items-center gap-2.5">
-          <Logo size={38} />
-          <div>
-            <div className="font-display font-bold text-[15px] text-paper leading-none">СМЕНА<span className="text-accent">ЛАН</span></div>
-            <div className="text-[9px] font-bold text-steel-400 uppercase tracking-[0.16em] mt-1">сервер · LAN</div>
-          </div>
-        </div>
-        <div className="flex-1 overflow-y-auto dark-scroll px-3 pb-3">
-          {userNav.length > 0 && <NavGroup label="Работа" items={userNav} view={view} setView={setView} />}
-          {adminNav.length > 0 && <NavGroup label="Управление" items={adminNav} view={view} setView={setView} />}
-        </div>
-        <div className="p-3 border-t border-steel-700">
-          <div className="flex items-center gap-2.5 px-2 py-1.5">
-            <Avatar u={me} size={34} />
-            <div className="min-w-0 flex-1">
-              <div className="text-paper text-xs font-extrabold truncate">{me.name}</div>
-              <div className="text-[10px] font-bold text-steel-400 truncate">{me.dept}</div>
-            </div>
-            <button className="w-8 h-8 rounded-lg grid place-items-center text-steel-400 hover:text-bad hover:bg-steel-800 transition" title="Выйти" onClick={logout}><I n="logout" size={16} /></button>
-          </div>
-        </div>
-      </aside>
-
-      <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-16 shrink-0 bg-surface border-b border-line flex items-center gap-4 px-6 sticky top-0 z-30">
-          <div>
-            <h1 className="font-display font-semibold text-[17px] leading-none">{title}</h1>
-            <div className="text-[10.5px] font-bold text-mute mt-1">{db.settings.orgName} · {db.settings.orgAddress}</div>
-          </div>
-          <div className="ml-auto flex items-center gap-3">
-            <OnlineDot />
-            <div className="hidden md:flex items-center bg-paper border border-line rounded-lg p-0.5 gap-0.5">
-              {([["auto", "info", "Авто"], ["desktop", "desk", "ПК"], ["mobile", "phone", "PWA"]] as [LayoutPref, string, string][]).map(([p, ic, l]) => (
-                <button key={p} onClick={() => setPref(p)} title={`Интерфейс: ${l}`}
-                  className={`w-8 h-7 rounded-md grid place-items-center transition ${pref === p ? "bg-steel-900 text-paper" : "text-mute hover:text-ink"}`}><I n={ic} size={14} /></button>
               ))}
             </div>
-            <Bell />
-            <button className="flex items-center gap-2.5 pl-1.5 pr-3 py-1.5 rounded-xl hover:bg-paper transition" onClick={() => setView("profile")}>
-              <Avatar u={me} size={34} />
-              <div className="text-left hidden lg:block">
-                <div className="text-xs font-extrabold leading-none">{me.name.split(" ").slice(0, 2).join(" ")}</div>
-                <div className="mt-1"><RoleBadge role={me.role} /></div>
-              </div>
-            </button>
-          </div>
-        </header>
-        <main className="flex-1 overflow-y-auto p-6">
-          <div key={view} className="anim-rise max-w-[1400px] mx-auto">{content}</div>
-        </main>
-      </div>
-    </div>
-  );
-}
-
-function NavGroup({ label, items, view, setView }: {
-  label: string; items: { id: ModuleId; label: string; icon: string }[]; view: ModuleId; setView: (v: ModuleId) => void;
-}) {
-  const { db } = useStore();
-  const pending = db.requests.filter((r) => r.status === "pending").length;
-  return (
-    <div className="mt-4">
-      <div className="px-2.5 text-[9.5px] font-extrabold uppercase tracking-[0.16em] text-steel-400 mb-1.5">{label}</div>
-      {items.map((m) => (
-        <button key={m.id} onClick={() => setView(m.id)}
-          className={`relative w-full flex items-center gap-2.5 px-2.5 h-9.5 h-10 rounded-lg text-[13px] font-bold mb-0.5 transition-all duration-150 cursor-pointer
-            ${view === m.id ? "bg-steel-800 text-paper" : "text-steel-200 hover:bg-steel-800/60 hover:text-paper"}`}>
-          {view === m.id && <span className="absolute left-0 top-2 bottom-2 w-[3px] rounded-full bg-accent" />}
-          <I n={m.icon} size={16} />
-          {m.label}
-          {m.id === "requests" && pending > 0 && <span className="ml-auto badge bg-accent text-white !px-1.5 tnum">{pending}</span>}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function Bell() {
-  const { db, me, markNoticesRead } = useStore();
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  if (!me) return null;
-  const list = myNotices(db, me).slice(0, 20);
-  const unread = list.filter((n) => !n.readBy.includes(me.id)).length;
-
-  useEffect(() => {
-    if (!open) return;
-    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
-    window.addEventListener("mousedown", h);
-    return () => window.removeEventListener("mousedown", h);
-  }, [open]);
-
-  return (
-    <div className="relative" ref={ref}>
-      <button className="relative w-9 h-9 rounded-xl grid place-items-center text-mute hover:bg-paper hover:text-ink transition" onClick={() => setOpen(!open)}>
-        <I n="bell" size={18} />
-        {unread > 0 && <span className="absolute top-1 right-1 min-w-[16px] h-4 px-1 rounded-full bg-accent text-white text-[9px] font-extrabold grid place-items-center tnum">{unread}</span>}
-      </button>
-      {open && (
-        <div className="absolute right-0 top-11 w-[340px] card shadow-xl z-50 anim-pop overflow-hidden">
-          <div className="px-4 py-3 border-b border-line flex items-center justify-between">
-            <b className="text-sm font-display font-semibold">Уведомления</b>
-            {unread > 0 && <button className="text-[11px] font-extrabold text-accent-deep hover:underline" onClick={markNoticesRead}>Прочитать всё</button>}
-          </div>
-          <div className="max-h-[380px] overflow-y-auto">
-            {list.length === 0 ? <div className="p-6 text-center text-xs font-bold text-mute">Пока тихо</div> : list.map((n) => {
-              const isUnread = !n.readBy.includes(me.id);
-              return (
-                <div key={n.id} className={`px-4 py-3 border-b border-line/60 text-sm flex gap-2.5 ${isUnread ? "bg-accent-soft/40" : ""}`}>
-                  <span className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${isUnread ? "bg-accent" : "bg-line"}`} />
-                  <div>
-                    <div className={`leading-snug ${isUnread ? "font-bold" : "font-semibold text-mute"}`}>{n.text}</div>
-                    <div className="text-[10px] font-bold text-mute mt-1">{relTime(n.ts)}</div>
-                  </div>
-                </div>
-              );
-            })}
+            <button className="btn btn-ghost btn-sm w-full mt-3 !border-steel-600 !bg-steel-800 !text-steel-200" onClick={logout}><I n="logout" size={13} />Выйти</button>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+function BellBtn({ bell, setBell, unread, notices, me, onRead, reminders }: {
+  bell: boolean; setBell: (v: boolean) => void; unread: number; notices: ReturnType<typeof myNotices>;
+  me: NonNullable<ReturnType<typeof useStore>["me"]>; onRead: () => void; reminders: { id: string; title: string; due: string }[];
+}) {
+  return (
+    <div className="relative">
+      <button className={`w-9 h-9 rounded-full grid place-items-center transition relative ${bell ? "bg-paper" : "hover:bg-paper"}`} onClick={() => { setBell(!bell); if (!bell) onRead(); }}>
+        <I n="bell" size={17} />
+        {unread > 0 && <span className="absolute -top-0.5 -right-0.5 min-w-[17px] h-[17px] px-1 rounded-full bg-bad text-white text-[10px] font-extrabold grid place-items-center">{unread}</span>}
+      </button>
+      {bell && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setBell(false)} />
+          <div className="absolute right-0 top-11 w-[min(360px,86vw)] card z-50 anim-pop overflow-hidden">
+            <div className="px-4 py-3 border-b border-line flex items-center gap-2">
+              <b className="font-display text-sm">Уведомления</b>
+              <span className="text-[11px] text-mute font-bold ml-auto">прочитано при открытии</span>
+            </div>
+            <div className="max-h-[380px] overflow-y-auto">
+              {reminders.length > 0 && reminders.map((r) => (
+                <div key={r.id} className="px-4 py-2.5 border-b border-line/60 flex gap-2.5 bg-warn-soft/40">
+                  <I n="bell" size={15} className="text-warn shrink-0 mt-0.5" />
+                  <div><b className="text-[12.5px] block">Напоминание: {r.title}</b><span className="text-[11px] text-mute font-bold">к выполнению · раздел «Моя смена»</span></div>
+                </div>
+              ))}
+              {notices.length === 0 && reminders.length === 0 && <p className="text-center text-[12px] font-bold text-mute py-8">Пока тихо</p>}
+              {notices.slice(0, 20).map((n) => (
+                <div key={n.id} className="px-4 py-2.5 border-b border-line/60 flex gap-2.5">
+                  <I n="info" size={15} className="text-night shrink-0 mt-0.5" />
+                  <div className="min-w-0">
+                    <p className="text-[12.5px] font-semibold leading-snug">{n.text}</p>
+                    <span className="text-[10.5px] text-mute font-bold">{relTime(n.ts)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
       )}
     </div>
   );

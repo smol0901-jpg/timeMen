@@ -1,170 +1,125 @@
 import React, { useMemo, useRef, useState } from "react";
+import { useStore, userById, wsName, posName, openPunchOf, punchDur, summarizeAll } from "../lib/store";
+import { SHIFT_META, ShiftType, Role, PayMode, PAY_LABEL, User } from "../lib/types";
 import {
-  useStore, openPunchOf, punchDur, workedOn, plannedOn, summarizeAll, summarize, userById,
-} from "../lib/store";
-import { SHIFT_META, ShiftType, User, Role, ROLE_LABEL } from "../lib/types";
-import {
-  todayKey, nowMin, fmtMin, fmtDur, fmtDurH, fmtDM, fmtDateFull, fmtMoney,
-  mondayKey, addDaysKey, monthStart, monthEnd, monthTitle, daysInMonth, rangeKeys,
-  weekdayIdx, WD, isWeekend, relTime, hDec, fmtDate,
+  todayKey, nowMin, fmtMin, fmtDur, fmtDurH, monthTitle, rangeKeys, addDaysKey, fmtDateFull, WD, weekdayIdx,
+  isWeekend, fmtMoney, daysInMonth, relTime, hDec,
 } from "../lib/time";
-import { I, Avatar, useNow, useToast, Bars, Progress, Seg, Field, Empty, Modal, Confirm, RoleBadge, shrinkImage, Stat } from "../components/ui";
-import { exportSchedule } from "../lib/excel";
+import { I, Avatar, useToast, Modal, Confirm, Field, Empty, Seg, RoleBadge, StatTile } from "../components/ui";
+import { exportScheduleMonth, scheduleTemplate, parseScheduleFile, parseEmployeesFile } from "../lib/excel";
 
 // ================= ДАШБОРД =================
-export function DashboardView({ go }: { go: (v: string) => void }) {
-  const { db, me, closePunch, decideRequest } = useStore();
+export function DashboardView() {
+  const { db, setPunchTout, confirmPunch } = useStore();
   const { toast } = useToast();
-  const now = useNow();
+  const [fix, setFix] = useState<Record<string, string>>({});
   const tk = todayKey();
 
-  const openNow = db.punches.filter((p) => p.tout === null);
-  const today = openNow.filter((p) => p.date === tk);
-  const stale = openNow.filter((p) => p.date !== tk);
-  const factToday = db.users.reduce((s, u) => s + workedOn(db, u.id, tk, true), 0);
-  const lateToday = today.filter((p) => p.tin > 485).length;
-  const pending = db.requests.filter((r) => r.status === "pending");
-  const rowsMonth = summarizeAll(db, monthStart(tk), monthEnd(tk));
-  const monthFact = rowsMonth.reduce((s, r) => s + r.factMin, 0);
-  const monthOt = rowsMonth.reduce((s, r) => s + r.otMin, 0);
-
-  const wk = mondayKey(tk);
-  const week = rangeKeys(wk, addDaysKey(wk, 6)).map((k) => ({
-    label: WD[weekdayIdx(k)],
-    a: db.users.reduce((s, u) => s + plannedOn(db, u.id, k), 0),
-    b: db.users.reduce((s, u) => s + workedOn(db, u.id, k, true), 0),
-  }));
-
-  const depts = [...new Set(db.users.filter((u) => u.role === "employee").map((u) => u.dept))];
+  const onShift = db.punches.filter((p) => p.tout === null).map((p) => ({ p, u: userById(db, p.userId) })).filter((x) => x.u);
+  const planned = db.schedule.filter((s) => s.date === tk && (s.type === "day" || s.type === "night")).length;
+  const lateToday = db.punches.filter((p) => {
+    const c = db.schedule.find((s) => s.userId === p.userId && s.date === p.date);
+    return p.date === tk && c && (c.type === "day" || c.type === "night") && p.tin > SHIFT_META[c.type].start + 5;
+  }).length;
+  const pendReq = db.requests.filter((r) => r.status === "pending" && r.kind !== "resolution").length;
+  const resolutions = db.punches.filter((p) => p.resolution === "pending");
+  const todayHours = db.punches.filter((p) => p.date === tk).reduce((s, p) => s + punchDur(p, db.settings.breakMin, true), 0);
+  const sensors = useMemo(() => {
+    const last = new Map<string, { value: number; unit: string; ts: string }>();
+    db.sensors.forEach((sp) => last.set(sp.name, { value: sp.value, unit: sp.unit, ts: sp.ts }));
+    return [...last.entries()];
+  }, [db.sensors]);
 
   return (
     <div className="grid gap-4">
-      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
-        <Stat icon="users" tone="ok" label="На смене сейчас" value={today.length} sub={`из ${db.users.filter((u) => u.role === "employee" && u.active).length} сотрудников`} />
-        <Stat icon="clock" tone="accent" label="Отработано сегодня" value={fmtDurH(factToday)} sub="по всем цехам" />
-        <Stat icon="warn" tone={lateToday ? "warn" : "ok"} label="Опоздали сегодня" value={lateToday} sub="после 08:05" />
-        <Stat icon="doc" tone={pending.length ? "bad" : "ok"} label="Заявки в ожидании" value={pending.length} sub={pending.length ? "требуют решения" : "всё разобрано"} />
-        <Stat icon="chart" tone="night" label="Факт за месяц" value={fmtDurH(monthFact)} sub={`переработка ${fmtDurH(monthOt)}`} />
-        <Stat icon="wifi" tone="ink" label="Активных сессий" value={openNow.length} sub="открытые отметки" />
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+        <StatTile icon="zap" tone="ok" label="Сейчас на смене" val={String(onShift.length)} sub={`план на сегодня: ${planned}`} />
+        <StatTile icon="clock" tone="accent" label="Часы за сегодня" val={fmtDur(todayHours)} sub="все сотрудники" />
+        <StatTile icon="history" tone={lateToday ? "warn" : "ok"} label="Опоздали сегодня" val={String(lateToday)} sub="позже 5 мин" />
+        <StatTile icon="doc" tone={pendReq ? "warn" : "ok"} label="Заявки ждут" val={String(pendReq)} sub="отпуска, замены, смены" />
+        <StatTile icon="warn" tone={resolutions.length ? "bad" : "ok"} label="Ждут подтверждения" val={String(resolutions.length)} sub="внеплановые смены" />
       </div>
 
-      <div className="grid xl:grid-cols-[1.3fr_1fr] gap-4 items-start">
-        <div className="grid gap-4">
-          <div className="card p-5">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="font-display text-sm font-semibold">Сейчас на смене</h3>
-              <span className="text-[11px] font-extrabold text-mute">{fmtDateFull(tk)} · {fmtMin(nowMin())}</span>
-            </div>
-            {today.length === 0 ? <Empty icon="clock" text="Никто ещё не отметился — тишина в цехах" /> : (
-              <div className="grid gap-2">
-                {today.map((p) => {
-                  const u = userById(db, p.userId);
-                  const el = punchDur(p, db.settings.breakMin, true);
-                  const plan = plannedOn(db, p.userId, tk);
-                  return (
-                    <div key={p.id} className="flex items-center gap-3 border border-line rounded-xl p-3 hover:border-steel-400 transition">
-                      <span className="relative"><Avatar u={u} size={38} /><span className="absolute -right-0.5 -bottom-0.5 w-3 h-3 rounded-full bg-ok ring-2 ring-white pulse-ok" /></span>
-                      <div className="min-w-0 flex-1">
-                        <div className="font-bold text-sm truncate">{u?.name}</div>
-                        <div className="text-[11px] text-mute font-bold">с {fmtMin(p.tin)} · {p.source === "kiosk" ? "терминал" : "приложение"} · {u?.dept}</div>
-                      </div>
-                      <div className="text-right hidden sm:block w-28">
-                        <div className="font-mono tnum font-bold text-ok">{fmtDurH(el)}</div>
-                        {plan > 0 && <div className="mt-1"><Progress val={(el / plan) * 100} tone="ok" /></div>}
-                      </div>
-                      <button className="btn btn-ghost btn-sm" onClick={() => { closePunch(p.id, nowMin()); toast(`Смена ${u?.name} закрыта вручную`, "ok"); }}>Закрыть</button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-            {stale.length > 0 && (
-              <div className="mt-4 border border-warn/30 bg-warn-soft rounded-xl p-3">
-                <div className="text-xs font-extrabold text-warn flex items-center gap-1.5 mb-2"><I n="warn" size={14} />Незакрытые смены прошлых дней — забыли отметиться</div>
-                {stale.map((p) => {
-                  const u = userById(db, p.userId);
-                  return (
-                    <div key={p.id} className="flex items-center gap-2 py-1 text-sm">
-                      <b>{u?.name}</b><span className="text-mute text-xs font-bold">{fmtDM(p.date)}, начал в {fmtMin(p.tin)}</span>
-                      <button className="btn btn-sm btn-ghost ml-auto" onClick={() => { closePunch(p.id, 1050); toast(`Закрыто в 17:30 (по графику)`, "ok"); }}>Закрыть в 17:30</button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          <div className="card p-5">
-            <h3 className="font-display text-sm font-semibold mb-4">Неделя предприятия: план и факт</h3>
-            <Bars data={week} />
+      {resolutions.length > 0 && (
+        <div className="card !border-bad/50 p-4">
+          <h3 className="font-display text-sm font-semibold flex items-center gap-2 mb-3"><I n="warn" size={16} className="text-bad" />Внеплановые смены — подтвердите часы</h3>
+          <div className="grid gap-2">
+            {resolutions.map((p) => {
+              const u = userById(db, p.userId);
+              const t = fix[p.id] || "18:00";
+              return (
+                <div key={p.id} className="flex items-center gap-3 flex-wrap border border-line rounded-lg px-3.5 py-2.5">
+                  <Avatar u={u} size={32} />
+                  <div className="min-w-0">
+                    <b className="text-[13px] block">{u?.name}</b>
+                    <span className="text-[11px] text-mute font-bold">{fmtDateFull(p.date)} · приход {fmtMin(p.tin)} · авто-закрытие {fmtMin(p.tout!)}</span>
+                  </div>
+                  <div className="ml-auto flex items-center gap-2">
+                    <input type="time" className="input !w-28 !h-8 font-mono" value={t} onChange={(e) => setFix({ ...fix, [p.id]: e.target.value })} />
+                    <button className="btn btn-ok btn-sm" onClick={() => {
+                      const [h, m] = t.split(":").map(Number);
+                      setPunchTout(p.id, h * 60 + m, false);
+                      confirmPunch(p.id);
+                      toast(`Часы ${u?.name} подтверждены`, "ok");
+                    }}><I n="check" size={13} />Подтвердить</button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
+      )}
 
+      <div className="grid lg:grid-cols-[1.4fr_1fr] gap-4 items-start">
+        <div className="card overflow-hidden">
+          <div className="px-4 py-3 border-b border-line flex items-center gap-2">
+            <h3 className="font-display text-sm font-semibold">Сейчас на смене</h3>
+            <span className="badge bg-ok-soft text-ok"><span className="w-1.5 h-1.5 rounded-full bg-ok pulse-ok" />live</span>
+          </div>
+          {onShift.length === 0 ? <Empty icon="clock" title="Никого нет на смене" text="Отметки появятся здесь в реальном времени со всех устройств." /> : (
+            <table className="tbl">
+              <thead><tr><th>Сотрудник</th><th>Цех</th><th>Приход</th><th>Отработано</th><th>Источник</th><th></th></tr></thead>
+              <tbody>
+                {onShift.map(({ p, u }) => (
+                  <tr key={p.id}>
+                    <td><span className="flex items-center gap-2"><Avatar u={u} size={28} /><b>{u!.name}</b></span></td>
+                    <td className="text-[12px] font-bold text-mute">{wsName(db, u!.workshopId)}</td>
+                    <td className="font-mono">{fmtMin(p.tin)}</td>
+                    <td className="font-mono font-bold text-ok">{fmtDurH(punchDur(p, db.settings.breakMin, true))}</td>
+                    <td><span className="badge bg-paper text-mute">{p.source === "kiosk" ? "терминал" : "приложение"}</span></td>
+                    <td><button className="btn btn-ghost btn-sm" onClick={() => { setPunchTout(p.id, nowMin(), false); toast(`Смена ${u!.name} закрыта (${fmtMin(nowMin())})`, "ok"); }}><I n="out" size={13} />Закрыть</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
         <div className="grid gap-4">
-          <div className="card p-5">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="font-display text-sm font-semibold">Заявки на решении</h3>
-              <button className="btn btn-soft btn-sm" onClick={() => go("requests")}>Все заявки<I n="right" size={13} /></button>
-            </div>
-            {pending.length === 0 ? <Empty icon="check" text="Новых заявок нет" /> : (
-              <div className="grid gap-2.5">
-                {pending.slice(0, 4).map((r) => {
-                  const u = userById(db, r.userId);
-                  const label = r.kind === "swap" ? "замена дня" : r.kind === "vacation" ? "отпуск" : "доп. смена";
-                  return (
-                    <div key={r.id} className="border border-line rounded-xl p-3">
-                      <div className="flex items-center gap-2.5">
-                        <Avatar u={u} size={30} />
-                        <div className="min-w-0 flex-1">
-                          <b className="text-xs block truncate">{u?.name}</b>
-                          <span className="text-[11px] text-mute font-bold">{label} · {fmtDate(r.date)} · {relTime(r.createdAt)}</span>
-                        </div>
-                      </div>
-                      {r.note && <p className="text-xs text-mute font-semibold mt-1.5 line-clamp-2">{r.note}</p>}
-                      <div className="flex gap-2 mt-2.5">
-                        <button className="btn btn-ok btn-sm flex-1" onClick={() => { decideRequest(r.id, true, ""); toast("Заявка одобрена, график обновлён", "ok"); }}><I n="check" size={13} />Одобрить</button>
-                        <button className="btn btn-ghost btn-sm flex-1" onClick={() => { decideRequest(r.id, false, ""); toast("Заявка отклонена"); }}><I n="x" size={13} />Отклонить</button>
-                      </div>
-                    </div>
-                  );
-                })}
+          <div className="card p-4">
+            <h3 className="font-display text-sm font-semibold mb-3 flex items-center gap-2"><I n="layers" size={15} />Датчики (API)</h3>
+            {sensors.length === 0 ? <p className="text-[12px] font-bold text-mute">Показаний нет. Эндпоинты для подключения — в «Инструкции и API».</p> : (
+              <div className="grid grid-cols-2 gap-2">
+                {sensors.map(([name, v]) => (
+                  <div key={name} className="border border-line rounded-lg px-3 py-2">
+                    <div className="text-[10px] font-extrabold uppercase text-mute truncate">{name}</div>
+                    <div className="font-mono font-bold tnum">{v.value} {v.unit}</div>
+                    <div className="text-[10px] text-mute font-bold">{relTime(v.ts)}</div>
+                  </div>
+                ))}
               </div>
             )}
           </div>
-
-          <div className="card p-5">
-            <h3 className="font-display text-sm font-semibold mb-3">Цеха за месяц</h3>
-            <div className="grid gap-3">
-              {depts.map((d) => {
-                const rs = rowsMonth.filter((r) => r.user.dept === d);
-                const f = rs.reduce((s, r) => s + r.factMin, 0);
-                const p = rs.reduce((s, r) => s + r.planMin, 0);
-                return (
-                  <div key={d}>
-                    <div className="flex justify-between text-xs font-bold mb-1">
-                      <span>{d} · {rs.length} чел.</span>
-                      <span className="tnum text-mute">{fmtDurH(f)} / {fmtDurH(p)}</span>
-                    </div>
-                    <Progress val={p ? (f / p) * 100 : 0} tone={f >= p ? "ok" : f >= p * 0.85 ? "accent" : "bad"} />
-                  </div>
-                );
-              })}
+          <div className="card p-4">
+            <h3 className="font-display text-sm font-semibold mb-3 flex items-center gap-2"><I n="history" size={15} />Последние действия</h3>
+            <div className="grid gap-2">
+              {db.audit.slice(0, 6).map((a) => (
+                <div key={a.id} className="text-[12px] leading-snug">
+                  <b>{a.actor}</b> <span className="badge bg-paper text-mute !text-[9.5px]">{a.action}</span>
+                  <div className="text-mute font-semibold">{a.details}</div>
+                </div>
+              ))}
             </div>
           </div>
-
-          {me?.role === "superadmin" && (
-            <div className="card p-5">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="font-display text-sm font-semibold">Последние действия</h3>
-                <button className="btn btn-ghost btn-sm" onClick={() => go("audit")}>Журнал<I n="right" size={13} /></button>
-              </div>
-              <div className="grid gap-2 text-xs font-semibold text-mute">
-                {db.audit.slice(0, 5).map((a) => (
-                  <div key={a.id} className="flex gap-2"><span className="text-mute/70 tnum shrink-0">{relTime(a.ts)}</span><span className="truncate"><b className="text-ink">{a.actor}:</b> {a.details}</span></div>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       </div>
     </div>
@@ -172,288 +127,274 @@ export function DashboardView({ go }: { go: (v: string) => void }) {
 }
 
 // ================= СОТРУДНИКИ =================
-const AV_COLORS = ["#e56f24", "#3f6d9e", "#17875c", "#8a5aa0", "#b0567b", "#4d8a9c", "#a97a12", "#5d6a80"];
+const AV_COLORS = ["#e56f24", "#3f6d9e", "#17875c", "#a97a12", "#7a4fbf", "#c74436", "#0f8b8d", "#b0487d"];
 
 export function EmployeesView() {
   const { db, me, addUser, updateUser, removeUser } = useStore();
   const { toast } = useToast();
-  const [q, setQ] = useState("");
-  const [deptF, setDeptF] = useState("");
-  const [edit, setEdit] = useState<User | "new" | null>(null);
+  const [modal, setModal] = useState<null | { edit?: User }>(null);
   const [del, setDel] = useState<User | null>(null);
-  const tk = todayKey();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [f, setF] = useState({ username: "", name: "", role: "employee" as Role, workshopId: "", positionId: "", payMode: "hour" as PayMode, rate: "", shiftCost: "", password: "" });
 
-  const depts = [...new Set(db.users.map((u) => u.dept))];
-  const list = db.users.filter((u) => (!deptF || u.dept === deptF) && (u.name.toLowerCase().includes(q.toLowerCase()) || u.username.toLowerCase().includes(q.toLowerCase())));
+  const openAdd = () => {
+    setF({ username: "", name: "", role: "employee", workshopId: db.workshops[0]?.id || "", positionId: "", payMode: "hour", rate: "", shiftCost: "", password: "" });
+    setModal({});
+  };
+  const applyPosition = (pid: string) => {
+    const p = db.positions.find((x) => x.id === pid);
+    setF((prev) => ({ ...prev, positionId: pid, payMode: p?.defPay || prev.payMode, rate: p ? String(p.rate) : prev.rate, shiftCost: p ? String(p.shiftCost) : prev.shiftCost }));
+  };
+  const save = () => {
+    if (modal?.edit) {
+      const r = updateUser(modal.edit.id, {
+        username: f.username, name: f.name, role: f.role, workshopId: f.workshopId || null, positionId: f.positionId || null,
+        payMode: f.payMode, rate: Number(f.rate) || 0, shiftCost: Number(f.shiftCost) || 0, password: f.password,
+      });
+      toast(r || "Сотрудник сохранён", r ? "bad" : "ok");
+    } else {
+      const r = addUser({
+        username: f.username, name: f.name, role: f.role, workshopId: f.workshopId || null, positionId: f.positionId || null,
+        payMode: f.payMode, rate: Number(f.rate) || 0, shiftCost: Number(f.shiftCost) || 0, password: f.password,
+        color: AV_COLORS[db.users.length % AV_COLORS.length], bio: "", active: true,
+      });
+      toast(r || "Сотрудник создан — пароль не обязателен, поставит сам", r ? "bad" : "ok");
+    }
+    if (!modal?.edit || !del) setModal(null);
+  };
 
   return (
     <div className="grid gap-4">
-      <div className="card p-4 flex flex-wrap gap-2.5 items-center">
-        <div className="relative">
-          <I n="search" size={15} />
-          <input className="input !pl-9 !w-56" placeholder="Поиск: имя или логин" value={q} onChange={(e) => setQ(e.target.value)} style={{ paddingLeft: 34 }} />
-        </div>
-        <select className="input !w-48" value={deptF} onChange={(e) => setDeptF(e.target.value)}>
-          <option value="">Все цеха</option>
-          {depts.map((d) => <option key={d} value={d}>{d}</option>)}
-        </select>
-        <span className="text-xs font-bold text-mute">{list.length} чел. · сотрудников без лимита</span>
-        <button className="btn btn-pri ml-auto" onClick={() => setEdit("new")}><I n="plus" size={16} />Добавить сотрудника</button>
+      <div className="flex items-center gap-2 flex-wrap">
+        <button className="btn btn-pri" onClick={openAdd}><I n="plus" size={16} />Создать сотрудника</button>
+        <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={async (e) => {
+          const file = e.target.files?.[0];
+          e.target.value = "";
+          if (!file) return;
+          try {
+            const rows = await parseEmployeesFile(file);
+            let ok = 0, err = 0;
+            for (const r of rows) {
+              const res = addUser({
+                username: r.username!, name: r.name!, role: "employee", workshopId: db.workshops[0]?.id || null, positionId: null,
+                payMode: "hour", rate: r.rate || 0, shiftCost: 0, password: "", color: AV_COLORS[(db.users.length + ok) % AV_COLORS.length], bio: "", active: true,
+              });
+              res ? err++ : ok++;
+            }
+            toast(`Импорт: создано ${ok}, ошибок ${err}`, err ? "bad" : "ok");
+          } catch { toast("Не удалось прочитать файл", "bad"); }
+        }} />
+        <button className="btn btn-ghost" onClick={() => fileRef.current?.click()}><I n="xls" size={16} />Импорт из Excel</button>
+        <span className="text-[12px] font-bold text-mute ml-auto">Всего: {db.users.filter((u) => u.role !== "superadmin").length} · активных: {db.users.filter((u) => u.active).length}</span>
       </div>
 
-      <div className="card overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="tbl min-w-[760px]">
-            <thead><tr><th>Сотрудник</th><th>Роль</th><th>Цех</th><th>Ставка</th><th>Пароль</th><th>Часы за месяц</th><th>Статус</th><th className="!text-right">Действия</th></tr></thead>
-            <tbody>
-              {list.map((u) => {
-                const s = summarize(db, u, monthStart(tk), monthEnd(tk));
-                const isRoot = u.role === "superadmin";
-                return (
-                  <tr key={u.id} className={u.active ? "" : "opacity-55"}>
-                    <td>
-                      <div className="flex items-center gap-2.5">
-                        <Avatar u={u} size={34} />
-                        <div className="min-w-0">
-                          <div className="font-bold flex items-center gap-1.5">{u.name}{isRoot && <I n="star" size={12} />}</div>
-                          <div className="text-[11px] text-mute font-bold font-mono">@{u.username}</div>
-                        </div>
-                      </div>
-                    </td>
-                    <td><RoleBadge role={u.role} /></td>
-                    <td className="text-xs font-bold">{u.dept}</td>
-                    <td className="tnum text-xs font-bold">{u.rate ? `${u.rate} ₽/ч` : "—"}</td>
-                    <td>{u.password ? <span className="badge bg-paper text-mute"><I n="lock" size={11} />задан</span> : <span className="badge bg-ok-soft text-ok">без пароля</span>}</td>
-                    <td className="tnum font-bold text-xs">{u.role === "employee" ? fmtDurH(s.factMin) : "—"}</td>
-                    <td>
-                      <button className={`badge cursor-pointer transition ${u.active ? "bg-ok-soft text-ok hover:bg-ok hover:text-white" : "bg-bad-soft text-bad hover:bg-bad hover:text-white"}`}
-                        onClick={() => { updateUser(u.id, { active: !u.active }); toast(u.active ? `${u.name} отключён от системы` : `${u.name} снова активен`, u.active ? "bad" : "ok"); }}>
-                        {u.active ? "активен" : "отключён"}
-                      </button>
-                    </td>
-                    <td>
-                      <div className="flex justify-end gap-1">
-                        <button className="w-8 h-8 rounded-lg grid place-items-center text-mute hover:bg-night-soft hover:text-night transition" onClick={() => setEdit(u)} title="Изменить"><I n="edit" size={15} /></button>
-                        <button className="w-8 h-8 rounded-lg grid place-items-center text-mute hover:bg-bad-soft hover:text-bad transition disabled:opacity-30" disabled={isRoot}
-                          title={isRoot ? "Суперадмина удалить невозможно" : "Удалить"} onClick={() => setDel(u)}><I n="trash" size={15} /></button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+      <div className="card overflow-x-auto">
+        <table className="tbl min-w-[860px]">
+          <thead><tr><th>Сотрудник</th><th>Логин</th><th>Роль</th><th>Цех</th><th>Должность</th><th>Оплата</th><th>Пароль</th><th>Активен</th><th></th></tr></thead>
+          <tbody>
+            {db.users.map((u) => (
+              <tr key={u.id} className={u.active ? "" : "opacity-50"}>
+                <td><span className="flex items-center gap-2.5"><Avatar u={u} size={30} /><b className="whitespace-nowrap">{u.name}</b></span></td>
+                <td className="font-mono text-[12px]">@{u.username}</td>
+                <td><RoleBadge role={u.role} /></td>
+                <td>
+                  <select className="input !h-8 !w-40 !text-[12px]" value={u.workshopId || ""} onChange={(e) => updateUser(u.id, { workshopId: e.target.value || null })} disabled={u.role === "superadmin"}>
+                    <option value="">—</option>
+                    {db.workshops.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+                  </select>
+                </td>
+                <td>
+                  <select className="input !h-8 !w-40 !text-[12px]" value={u.positionId || ""} onChange={(e) => updateUser(u.id, { positionId: e.target.value || null })} disabled={u.role === "superadmin"}>
+                    <option value="">—</option>
+                    {db.positions.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </td>
+                <td>
+                  <span className="badge bg-paper text-ink">{PAY_LABEL[u.payMode]}</span>
+                  <span className="text-[11px] font-bold text-mute ml-1.5">{u.payMode === "hour" ? `${u.rate} ₽/ч` : u.payMode === "shift" ? `${fmtMoney(u.shiftCost)}/см` : "выработка"}</span>
+                </td>
+                <td>{u.password ? <span className="badge bg-ok-soft text-ok"><I n="lock" size={11} />есть</span> : <span className="badge bg-warn-soft text-warn">без пароля</span>}</td>
+                <td>
+                  <button className={`btn btn-sm ${u.active ? "btn-ok" : "btn-ghost"}`} onClick={() => { updateUser(u.id, { active: !u.active }); toast(u.active ? `${u.name} отключён` : `${u.name} включён`, "ok"); }} disabled={u.role === "superadmin"}>
+                    {u.active ? "Да" : "Нет"}
+                  </button>
+                </td>
+                <td>
+                  <span className="flex gap-1">
+                    <button className="w-8 h-8 rounded-md grid place-items-center text-mute hover:bg-paper hover:text-ink transition" onClick={() => {
+                      setF({ username: u.username, name: u.name, role: u.role, workshopId: u.workshopId || "", positionId: u.positionId || "", payMode: u.payMode, rate: String(u.rate || ""), shiftCost: String(u.shiftCost || ""), password: u.password });
+                      setModal({ edit: u });
+                    }}><I n="edit" size={14} /></button>
+                    {u.role !== "superadmin" && (
+                      <button className="w-8 h-8 rounded-md grid place-items-center text-mute hover:bg-bad-soft hover:text-bad transition" onClick={() => setDel(u)}><I n="trash" size={14} /></button>
+                    )}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
 
-      {edit && <EmployeeModal u={edit === "new" ? null : edit} canSuper={me?.role === "superadmin"} depts={depts}
-        onClose={() => setEdit(null)}
-        onSave={(data) => {
-          if (edit === "new") {
-            const e = addUser({
-              name: "", username: "", password: "", role: "employee", dept: "", rate: 0, bio: "", active: true,
-              ...data, color: AV_COLORS[db.users.length % AV_COLORS.length],
-            });
-            if (e) return toast(e, "bad");
-            toast(`Сотрудник ${data.name} создан`, "ok");
-          } else {
-            const e = updateUser(edit.id, data);
-            if (e) return toast(e, "bad");
-            toast("Изменения сохранены", "ok");
-          }
-          setEdit(null);
-        }} />}
+      <Modal open={!!modal} onClose={() => setModal(null)} title={modal?.edit ? `Редактирование: ${modal.edit.name}` : "Новый сотрудник"} w="max-w-xl"
+        foot={<>
+          <button className="btn btn-ghost" onClick={() => setModal(null)}>Отмена</button>
+          <button className="btn btn-pri" onClick={save}><I n="check" size={15} />Сохранить</button>
+        </>}>
+        <div className="grid sm:grid-cols-2 gap-4">
+          <Field label="Логин" hint="Короткий, для входа и Excel"><input className="input font-mono" value={f.username} onChange={(e) => setF({ ...f, username: e.target.value })} placeholder="ivan" /></Field>
+          <Field label="ФИО"><input className="input" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="Иванов Иван" /></Field>
+          <Field label="Роль">
+            <select className="input" value={f.role} onChange={(e) => setF({ ...f, role: e.target.value as Role })} disabled={modal?.edit?.id === "u-root"}>
+              <option value="employee">Сотрудник</option>
+              <option value="admin">Админ</option>
+              {me?.role === "superadmin" && <option value="superadmin">Суперадмин</option>}
+            </select>
+          </Field>
+          <Field label="Пароль" hint="Пусто = вход без пароля (поставит сам)"><input className="input font-mono" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} placeholder="—" /></Field>
+          <Field label="Цех">
+            <select className="input" value={f.workshopId} onChange={(e) => setF({ ...f, workshopId: e.target.value })}>
+              <option value="">Без цеха</option>
+              {db.workshops.map((w) => <option key={w.id} value={w.id}>{w.name}{w.piecework ? " · сдельный" : ""}</option>)}
+            </select>
+          </Field>
+          <Field label="Должность" hint="Подставит оплату и норму">
+            <select className="input" value={f.positionId} onChange={(e) => applyPosition(e.target.value)}>
+              <option value="">Без должности</option>
+              {db.positions.map((p) => <option key={p.id} value={p.id}>{p.name} · {p.normH} ч</option>)}
+            </select>
+          </Field>
+          <Field label="Тип оплаты">
+            <select className="input" value={f.payMode} onChange={(e) => setF({ ...f, payMode: e.target.value as PayMode })}>
+              <option value="hour">Почасовая</option><option value="shift">Посменная (часы учитываются, платим за смену)</option><option value="piece">Сдельная (по выработке)</option>
+            </select>
+          </Field>
+          {f.payMode === "hour" && <Field label="Ставка ₽/час"><input type="number" className="input tnum" value={f.rate} onChange={(e) => setF({ ...f, rate: e.target.value })} /></Field>}
+          {f.payMode === "shift" && <Field label="Стоимость смены ₽"><input type="number" className="input tnum" value={f.shiftCost} onChange={(e) => setF({ ...f, shiftCost: e.target.value })} /></Field>}
+          {f.payMode === "piece" && <p className="text-[12px] font-bold text-mute bg-paper border border-line rounded-lg p-3 self-end">Оплата = Σ объём × цена позиции из справочника. Часы учёта сохраняются для статистики.</p>}
+        </div>
+      </Modal>
 
       <Confirm open={!!del} onClose={() => setDel(null)} title={`Удалить ${del?.name}?`}
-        text={<>Будут удалены отметки, график и заявки этого сотрудника. Записи в ленте останутся. Действие необратимо.</>}
-        onYes={() => { if (del) { const e = removeUser(del.id); e ? toast(e, "bad") : toast("Пользователь удалён"); } }} />
+        text="Пользователь и его отметки будут удалены. Обычно лучше просто отключить — история останется."
+        onYes={() => { if (del) { const r = removeUser(del.id); toast(r || "Пользователь удалён", r ? "bad" : "ok"); } }} />
     </div>
-  );
-}
-
-function EmployeeModal({ u, onClose, onSave, depts, canSuper }: {
-  u: User | null; onClose: () => void; onSave: (d: Partial<User>) => void; depts: string[]; canSuper: boolean;
-}) {
-  const [name, setName] = useState(u?.name || "");
-  const [username, setUsername] = useState(u?.username || "");
-  const [password, setPassword] = useState(u?.password || "");
-  const [role, setRole] = useState<Role>(u?.role || "employee");
-  const [dept, setDept] = useState(u?.dept || depts[0] || "Цех №1");
-  const [rate, setRate] = useState(u?.rate || 0);
-  const [bio, setBio] = useState(u?.bio || "");
-  const [avatar, setAvatar] = useState(u?.avatar || null);
-  const fileRef = useRef<HTMLInputElement>(null);
-
-  return (
-    <Modal open onClose={onClose} title={u ? "Изменить сотрудника" : "Новый сотрудник"} w="max-w-xl"
-      foot={<>
-        <button className="btn btn-ghost" onClick={onClose}>Отмена</button>
-        <button className="btn btn-pri" onClick={() => onSave({ name, username, password, role, dept, rate, bio, avatar })}><I n="check" size={15} />Сохранить</button>
-      </>}>
-      <div className="grid sm:grid-cols-2 gap-4">
-        <div className="sm:col-span-2 flex items-center gap-4">
-          <button className="relative group" onClick={() => fileRef.current?.click()}>
-            <Avatar u={{ ...({} as User), name: name || "??", color: "#3f6d9e", avatar }} size={64} />
-            <span className="absolute inset-0 rounded-full bg-steel-950/50 opacity-0 group-hover:opacity-100 grid place-items-center text-white transition"><I n="camera" size={20} /></span>
-          </button>
-          <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={async (e) => { const f = e.target.files?.[0]; if (f) setAvatar(await shrinkImage(f, 256)); }} />
-          <div className="text-xs font-bold text-mute">Фотоаватар — необязательно.<br />Без фото показывается инициал-эмблема.</div>
-        </div>
-        <Field label="ФИО"><input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Иванов Пётр Сергеевич" /></Field>
-        <Field label="Логин"><input className="input font-mono" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="ivanov" /></Field>
-        <Field label="Пароль" hint="Пусто — вход без пароля (для терминала)"><input className="input font-mono" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="—" /></Field>
-        <Field label="Роль">
-          <select className="input" value={role} onChange={(e) => setRole(e.target.value as Role)}>
-            <option value="employee">Сотрудник</option>
-            <option value="admin">Админ</option>
-            {canSuper && <option value="superadmin">Суперадмин</option>}
-          </select>
-        </Field>
-        <Field label="Цех / отдел">
-          <input className="input" list="depts-list" value={dept} onChange={(e) => setDept(e.target.value)} />
-          <datalist id="depts-list">{depts.map((d) => <option key={d} value={d} />)}</datalist>
-        </Field>
-        <Field label="Ставка, ₽/час" hint="Для расчёта зарплаты в отчётах"><input type="number" min={0} className="input tnum" value={rate} onChange={(e) => setRate(Number(e.target.value))} /></Field>
-        <div className="sm:col-span-2">
-          <Field label="Короткая информация"><textarea className="input" rows={2} value={bio} onChange={(e) => setBio(e.target.value)} placeholder="Бригадир, линия №2…" /></Field>
-        </div>
-      </div>
-      {role === "superadmin" && <p className="mt-3 text-[11px] font-bold text-warn flex items-center gap-1.5"><I n="shield" size={13} />Суперадмин получает полный контроль, его нельзя удалить.</p>}
-    </Modal>
   );
 }
 
 // ================= РЕДАКТОР ГРАФИКА =================
 export function ScheduleEditor() {
-  const { db, me, setShift, fillPattern, publishSchedule } = useStore();
+  const { db, setShift, fillPattern, publishSchedule, importSchedule } = useStore();
   const { toast } = useToast();
   const tk = todayKey();
-  const [mk, setMk] = useState(tk.slice(0, 7) + "-01");
-  const [deptF, setDeptF] = useState("");
-  const [menu, setMenu] = useState<{ u: string; d: string; x: number; y: number } | null>(null);
-  const [pat, setPat] = useState("5/2d");
-  const dim = daysInMonth(mk);
-  const days = Array.from({ length: dim }, (_, i) => ({ key: mk.slice(0, 8) + String(i + 1).padStart(2, "0"), day: i + 1 }));
-  const emps = db.users.filter((u) => u.role === "employee" && (!deptF || u.dept === deptF));
-  const depts = [...new Set(db.users.filter((u) => u.role === "employee").map((u) => u.dept))];
+  const [mk, setMk] = useState(tk.slice(0, 7));
+  const [uid2, setUid2] = useState(db.users.find((u) => u.role === "employee")?.id || "");
+  const [comment, setComment] = useState("");
+  const [pat, setPat] = useState<"5/2" | "2/2" | "3/3" | "clear">("5/2");
+  const [night, setNight] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
 
-  const cellOf = (uid: string, date: string) => db.schedule.find((s) => s.userId === uid && s.date === date);
-  const headcount = (date: string) => emps.filter((u) => { const c = cellOf(u.id, date); return c && (c.type === "day" || c.type === "night"); }).length;
+  const emps = db.users.filter((u) => u.role === "employee" && u.active);
+  const dim = daysInMonth(mk + "-01");
+  const keys = rangeKeys(mk + "-01", `${mk}-${String(dim).padStart(2, "0")}`);
+  const weeks: string[][] = [];
+  for (let i = 0; i < keys.length; i += 7) weeks.push(keys.slice(i, i + 7));
+
+  const nextType = (cur: ShiftType | undefined): ShiftType | null => {
+    const order: (ShiftType | null)[] = ["day", "night", "off", "vacation", "sick", null];
+    return order[(order.indexOf(cur || null) + 1) % order.length];
+  };
 
   return (
     <div className="grid gap-4">
-      <div className="card p-4 flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-1.5">
-          <button className="w-9 h-9 rounded-lg border border-line grid place-items-center hover:bg-paper transition" onClick={() => setMk(addDaysKey(mk, -daysInMonth(mk)))}><I n="left" size={16} /></button>
-          <div className="font-display font-semibold text-sm w-40 text-center">{monthTitle(mk)}</div>
-          <button className="w-9 h-9 rounded-lg border border-line grid place-items-center hover:bg-paper transition" onClick={() => setMk(addDaysKey(monthEnd(mk), 1))}><I n="right" size={16} /></button>
-        </div>
-        <select className="input !w-44 !h-9" value={deptF} onChange={(e) => setDeptF(e.target.value)}>
-          <option value="">Все цеха</option>
-          {depts.map((d) => <option key={d} value={d}>{d}</option>)}
-        </select>
-        <div className="ml-auto flex flex-wrap gap-2">
-          <button className="btn btn-ghost btn-sm" onClick={() => { exportSchedule(db, mk, deptF || undefined); toast("График выгружен в Excel", "ok"); }}><I n="xls" size={14} />Excel</button>
-          <button className="btn btn-pri btn-sm" onClick={() => { publishSchedule(mk); toast("График опубликован — сотрудники получили уведомление", "ok"); }}><I n="send" size={14} />Опубликовать</button>
-        </div>
-      </div>
-
-      <div className="card p-4 flex flex-wrap items-center gap-2.5 text-xs font-bold text-mute">
-        <I n="info" size={14} />
-        Клик по ячейке — тип смены. Шаблон месяца применяется кнопкой в строке сотрудника.
-        <span className="ml-auto flex items-center gap-1.5">
-          Шаблон:
-          <select className="input !h-8 !w-44 text-xs" value={pat} onChange={(e) => setPat(e.target.value)}>
-            <option value="5/2d">5/2 · день 08–17</option>
-            <option value="5/2n">5/2 · ночь 20–08</option>
-            <option value="2/2d">2/2 · день</option>
-            <option value="3/3d">3/3 · день</option>
-            <option value="clear">Очистить месяц</option>
+      <div className="card p-4 grid gap-3">
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <button className="btn btn-ghost btn-sm" onClick={() => setMk(shiftM(mk, -1))}><I n="chevL" size={14} /></button>
+          <b className="font-display text-sm w-36 text-center">{monthTitle(mk + "-01")}</b>
+          <button className="btn btn-ghost btn-sm" onClick={() => setMk(shiftM(mk, 1))}><I n="chevR" size={14} /></button>
+          <select className="input !w-56 !h-9" value={uid2} onChange={(e) => setUid2(e.target.value)}>
+            {emps.map((u) => <option key={u.id} value={u.id}>{u.name} · {wsName(db, u.workshopId)}</option>)}
           </select>
-        </span>
+          <input className="input !h-9 !w-64" placeholder="Комментарий к изменениям (увидит сотрудник)" value={comment} onChange={(e) => setComment(e.target.value)} />
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Seg small opts={[{ v: "5/2", label: "5/2" }, { v: "2/2", label: "2/2" }, { v: "3/3", label: "3/3" }, { v: "clear", label: "Очистить" }]} val={pat} onChange={setPat} />
+          <button className={`btn btn-sm ${night ? "btn-dark" : "btn-ghost"}`} onClick={() => setNight(!night)}><I n="moon" size={13} />{night ? "Ночные" : "Дневные"}</button>
+          <button className="btn btn-soft btn-sm" onClick={() => { fillPattern(uid2, mk + "-01", pat, night, comment.trim()); toast(`Шаблон «${pat}» применён`, "ok"); }}><I n="zap" size={13} />Заполнить месяц</button>
+          <span className="mx-1 h-5 w-px bg-line" />
+          <button className="btn btn-ghost btn-sm" onClick={() => { scheduleTemplate(db, mk + "-01"); toast("Шаблон Excel сохранён", "ok"); }}><I n="xls" size={13} />Шаблон</button>
+          <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={async (e) => {
+            const file = e.target.files?.[0];
+            e.target.value = "";
+            if (!file) return;
+            try {
+              const cells = await parseScheduleFile(file, mk + "-01");
+              const res = importSchedule(cells, comment.trim());
+              toast(`Импортировано ячеек: ${res.ok}${res.missing.length ? `, неизвестные логины: ${res.missing.join(", ")}` : ""}`, res.missing.length ? "bad" : "ok");
+            } catch { toast("Не удалось прочитать файл", "bad"); }
+          }} />
+          <button className="btn btn-ghost btn-sm" onClick={() => fileRef.current?.click()}><I n="upload" size={13} />Импорт</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => { exportScheduleMonth(db, mk + "-01"); toast("График выгружен в Excel", "ok"); }}><I n="download" size={13} />Excel</button>
+          <button className="btn btn-pri btn-sm ml-auto" onClick={() => { publishSchedule(mk + "-01"); toast("График опубликован — сотрудники уведомлены", "ok"); }}><I n="send" size={13} />Опубликовать</button>
+        </div>
       </div>
 
-      <div className="card overflow-hidden">
-        <div className="overflow-auto max-h-[62vh]">
-          <table className="tbl border-separate border-spacing-0" style={{ minWidth: 34 * dim + 220 }}>
-            <thead className="sticky top-0 z-20">
-              <tr>
-                <th className="sticky left-0 bg-surface z-10 min-w-[200px] !bg-paper">Сотрудник</th>
-                {days.map(({ key, day }) => (
-                  <th key={key} className={`!px-0 text-center min-w-[32px] ${isWeekend(key) ? "!bg-steel-900/8 text-mute" : ""} ${key === tk ? "!bg-accent-soft" : ""}`}>
-                    <div className="text-[9px] opacity-70">{WD[weekdayIdx(key)]}</div>{day}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {emps.map((u) => (
-                <tr key={u.id}>
-                  <td className="sticky left-0 bg-surface z-10 border-r border-line">
-                    <div className="flex items-center gap-2">
-                      <Avatar u={u} size={28} />
-                      <div className="min-w-0">
-                        <div className="font-bold text-xs truncate leading-tight">{u.name}</div>
-                        <div className="text-[10px] text-mute font-bold truncate">{u.dept}</div>
-                      </div>
-                      <button className="ml-auto btn btn-ghost btn-sm !h-6 !px-1.5 !text-[10px]"
-                        onClick={() => {
-                          const night = pat === "5/2n";
-                          const p = pat === "clear" ? "clear" : pat.slice(0, 3) as "5/2" | "2/2" | "3/3";
-                          fillPattern(u.id, mk, p, night);
-                          toast(`Шаблон применён: ${u.name}`, "ok");
-                        }}>шаблон</button>
+      <div className="card p-4 overflow-x-auto">
+        <div className="flex gap-1.5 mb-3 flex-wrap">
+          {Object.entries(SHIFT_META).map(([k, m]) => <span key={k} className={`badge ${m.cls}`}>{m.code} — {m.label}</span>)}
+          <span className="text-[11px] font-bold text-mute ml-auto self-center">клик по ячейке переключает тип · изменения попадают в журнал и уведомления</span>
+        </div>
+        {emps.length === 0 ? <Empty icon="users" title="Нет сотрудников" text="Создайте сотрудников, чтобы строить график." /> : (
+          <div className="min-w-[720px] grid gap-4">
+            {weeks.map((wk, wi) => (
+              <div key={wi}>
+                <div className="grid gap-1" style={{ gridTemplateColumns: "170px repeat(7, 1fr)" }}>
+                  <span />
+                  {wk.map((k) => (
+                    <div key={k} className={`text-center rounded-md py-1 text-[10.5px] font-extrabold ${isWeekend(k) ? "text-accent-deep" : "text-mute"} ${k === tk ? "bg-accent-soft" : ""}`}>
+                      {WD[weekdayIdx(k)]} {Number(k.slice(8))}
                     </div>
-                  </td>
-                  {days.map(({ key }) => {
-                    const c = cellOf(u.id, key);
-                    const meta = c ? SHIFT_META[c.type] : null;
+                  ))}
+                  <span className="text-[12px] font-bold truncate pr-2 self-center">{emps.find((u) => u.id === uid2)?.name.split(" ")[0]}</span>
+                  {wk.map((k) => {
+                    const c = db.schedule.find((s) => s.userId === uid2 && s.date === k);
                     return (
-                      <td key={key} className={`!p-0.5 text-center ${isWeekend(key) ? "bg-paper/50" : ""} ${key === tk ? "bg-accent-soft/50" : ""}`}>
-                        <button
-                          onClick={(e) => { const r = (e.target as HTMLElement).getBoundingClientRect(); setMenu({ u: u.id, d: key, x: Math.min(r.left, window.innerWidth - 190), y: Math.min(r.bottom + 4, window.innerHeight - 240) }); }}
-                          className={`w-full h-8 rounded-md text-[11px] font-extrabold transition hover:ring-2 hover:ring-accent/50 cursor-pointer ${meta ? meta.cls : "bg-transparent text-line hover:bg-paper"}`}>
-                          {meta ? meta.code : ""}
-                        </button>
-                      </td>
+                      <button key={k} onClick={() => setShift(uid2, k, nextType(c?.type), comment.trim())}
+                        className={`h-10 rounded-lg border text-[12px] font-extrabold transition-all active:scale-95 hover:shadow
+                        ${c ? `${SHIFT_META[c.type].cls} border-transparent` : "border-dashed border-line text-line hover:border-steel-400"}`}>
+                        {c ? SHIFT_META[c.type].code : "+"}
+                      </button>
                     );
                   })}
-                </tr>
-              ))}
-              <tr>
-                <td className="sticky left-0 bg-paper z-10 font-extrabold text-[11px] text-mute uppercase tracking-wider border-r border-line">В смену, чел.</td>
-                {days.map(({ key }) => {
-                  const n = headcount(key);
-                  return <td key={key} className={`text-center font-mono tnum text-[11px] font-bold ${n === 0 ? "text-line" : n <= 2 ? "text-warn" : "text-ok"}`}>{n || "·"}</td>;
-                })}
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {menu && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setMenu(null)} />
-          <div className="fixed z-50 anim-pop card p-1.5 shadow-xl w-[180px]" style={{ left: menu.x, top: menu.y }}>
-            <div className="px-2.5 py-1.5 text-[10px] font-extrabold uppercase tracking-wider text-mute">
-              {userById(db, menu.u)?.name.split(" ")[0]} · {fmtDM(menu.d)}
-            </div>
-            {(Object.keys(SHIFT_META) as ShiftType[]).map((t) => (
-              <button key={t} className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-paper text-left transition"
-                onClick={() => { setShift(menu.u, menu.d, t); setMenu(null); }}>
-                <span className={`badge ${SHIFT_META[t].cls} !w-7 justify-center`}>{SHIFT_META[t].code}</span>
-                <span className="text-xs font-bold">{SHIFT_META[t].label}</span>
-              </button>
+                </div>
+              </div>
             ))}
-            <button className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-bad-soft text-bad text-xs font-bold transition"
-              onClick={() => { setShift(menu.u, menu.d, null); setMenu(null); }}>
-              <I n="x" size={13} />Очистить ячейку
-            </button>
+            <div className="border-t border-line pt-3">
+              <b className="text-[12px] font-extrabold uppercase text-mute">Весь персонал — сводка по {monthTitle(mk + "-01")}</b>
+              <div className="grid gap-1 mt-2">
+                {emps.map((u) => {
+                  const plan = keys.reduce((s, k) => s + (db.schedule.find((x) => x.userId === u.id && x.date === k)?.type === "day" ? 8 : db.schedule.find((x) => x.userId === u.id && x.date === k)?.type === "night" ? 11.5 : 0), 0);
+                  const cnt = keys.filter((k) => ["day", "night"].includes(db.schedule.find((x) => x.userId === u.id && x.date === k)?.type || "")).length;
+                  return (
+                    <div key={u.id} className="flex items-center gap-2 text-[12px]">
+                      <Avatar u={u} size={22} /><span className="font-bold w-40 truncate">{u.name}</span>
+                      <span className="badge bg-paper text-mute">{cnt} смен</span>
+                      <span className="badge bg-night-soft text-night">план {hDec(plan * 60)} ч</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
-        </>
-      )}
+        )}
+      </div>
     </div>
   );
-  void me;
 }
+function shiftM(mk: string, n: number): string {
+  const [y, m] = mk.split("-").map(Number);
+  const d = new Date(y, m - 1 + n, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+export { summarizeAll, addDaysKey, fmtDateFull };
