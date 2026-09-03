@@ -5,16 +5,19 @@ import {
   todayKey, fmtMin, fmtDur, fmtDurH, fmtClock, mondayKey, addDaysKey, monthStart, monthEnd,
   yearStart, yearEnd, fmtDateFull, fmtDM, WD, weekdayIdx, isWeekend, rangeKeys, monthTitle, daysInMonth, fmtMoney, plural, fmtDate,
 } from "../lib/time";
-import { I, Avatar, useToast, Seg, WeekBars, StatTile, Field, Confirm, Empty, RoleBadge, useNow } from "../components/ui";
+import { I, Avatar, useToast, Seg, WeekBars, StatTile, Field, Confirm, Empty, RoleBadge, useNow, Modal } from "../components/ui";
 import { exportMyStats } from "../lib/excel";
+import { careerData } from "./hr";
+import { ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from "recharts";
 
 type Period = "day" | "week" | "month" | "year" | "range";
 
 export function PunchView() {
-  const { db, me, punch, punchOut, setPunchTout } = useStore();
+  const { db, me, punch, punchOut, setPunchTout, setPunchPlan } = useStore();
   const { toast } = useToast();
   const now = useNow();
   const [fixTime, setFixTime] = useState("18:00");
+  const [planTo, setPlanTo] = useState("18:00");
   if (!me) return null;
   const open = openPunchOf(db, me.id);
   const tk = todayKey();
@@ -46,6 +49,28 @@ export function PunchView() {
         </div>
       ))}
 
+      {open && open.auto === "unscheduled" && (
+        <div className="card !border-warn/60 p-4 flex flex-col sm:flex-row sm:items-center gap-3 anim-rise">
+          <span className="w-10 h-10 rounded-xl bg-warn-soft text-warn grid place-items-center shrink-0"><I n="cal" size={19} /></span>
+          <div className="flex-1 min-w-0">
+            <b className="text-sm block">Вы вышли вне графика</b>
+            <span className="text-[12px] text-mute font-bold">
+              {open.plannedOut != null
+                ? <>План: до <b className="font-mono">{fmtMin(open.plannedOut)}</b>. Не закроете смену — система закроет её по этому времени и отправит админу на проверку (камеры).</>
+                : "Укажите, до скольких планируете работать: если не закроете смену, система закроет её по этому времени и отправит отчёт администратору."}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <input type="time" className="input !w-32 !h-9 font-mono" value={planTo} onChange={(e) => setPlanTo(e.target.value)} />
+            <button className="btn btn-soft btn-sm" onClick={() => {
+              const [h, m] = planTo.split(":").map(Number);
+              setPunchPlan(open.id, h * 60 + m);
+              toast(`План сохранён: до ${fmtMin(h * 60 + m)}. Администратор уведомлён.`, "ok");
+            }}><I n="check" size={14} />{open.plannedOut != null ? "Изменить" : "Сохранить план"}</button>
+          </div>
+        </div>
+      )}
+
       <div className="card p-6 sm:p-8 text-center relative overflow-hidden">
         <div className="absolute inset-x-0 top-0 h-1.5 bg-gradient-to-r from-accent via-accent/40 to-transparent" />
         <div className="font-mono tnum font-semibold text-6xl sm:text-7xl tracking-tight">{fmtClock(now)}</div>
@@ -72,7 +97,8 @@ export function PunchView() {
           {!open ? (
             <button className="btn btn-pri !h-14 !px-8 !text-base !rounded-xl" onClick={() => {
               const r = punch("app");
-              if (r) toast(r, r.includes("но") ? "info" : "bad");
+              if (r === "UNSCHEDULED") toast("Вы вышли вне графика — укажите плановое время работы выше", "info");
+              else if (r) toast(r, "bad");
               else toast("Смена открыта — хорошего дня!", "ok");
             }}><I n="in" size={20} />Начать смену</button>
           ) : (
@@ -437,6 +463,67 @@ export function ProfileView() {
           <button className="btn btn-bad btn-sm" onClick={() => setConfirmOut(true)}><I n="logout" size={14} />Выйти из аккаунта</button>
         </div>
       </div>
+
+      <div className="card p-6 lg:col-span-2">
+        <h3 className="font-display text-sm font-semibold flex items-center gap-2 mb-1"><I n="chart" size={16} />Мой путь — несгораемый график за всё время работы</h3>
+        <p className="text-[11.5px] text-mute font-bold mb-3">Часы и балльные оценки по месяцам. Сохраняется навсегда, даже после архивации.</p>
+        {(() => {
+          const data = careerData(db, me);
+          if (data.every((x) => x.hours === 0 && x.points === null))
+            return <p className="text-[12.5px] font-bold text-mute py-4">Данных пока нет — график наполнится с первой смены.</p>;
+          return (
+            <ResponsiveContainer width="100%" height={220}>
+              <ComposedChart data={data}>
+                <XAxis dataKey="m" tick={{ fontSize: 10, fontWeight: 700 }} interval="preserveStartEnd" />
+                <YAxis yAxisId="h" tick={{ fontSize: 10 }} />
+                <YAxis yAxisId="p" orientation="right" domain={[0, 100]} tick={{ fontSize: 10 }} />
+                <Tooltip />
+                <Legend wrapperStyle={{ fontSize: 11, fontWeight: 700 }} />
+                <Bar yAxisId="h" dataKey="hours" name="Часы" fill="#3f6d9e" radius={[4, 4, 0, 0]} />
+                <Line yAxisId="p" dataKey="points" name="Оценка (баллы)" stroke="#e56f24" strokeWidth={2.5} dot={{ r: 3 }} connectNulls />
+              </ComposedChart>
+            </ResponsiveContainer>
+          );
+        })()}
+      </div>
+
+      <div className="card p-6">
+        <h3 className="font-display text-sm font-semibold flex items-center gap-2 mb-3"><I n="star" size={16} />Мои оценки</h3>
+        {db.ratings.filter((r) => r.userId === me.id).length === 0 ? (
+          <p className="text-[12.5px] font-bold text-mute">Оценок пока нет — управление ставит баллы ежемесячно.</p>
+        ) : (
+          <div className="grid gap-1.5">
+            {db.ratings.filter((r) => r.userId === me.id).sort((a, b) => b.month.localeCompare(a.month)).map((r) => (
+              <div key={r.id} className="flex items-center gap-3 border border-line rounded-lg px-3 py-2">
+                <span className={`font-display font-bold tnum text-sm w-12 ${r.points >= 80 ? "text-ok" : r.points >= 50 ? "text-warn" : "text-bad"}`}>{r.points}</span>
+                <div className="flex-1 h-1.5 rounded-full bg-line overflow-hidden"><div className={`h-full rounded-full ${r.points >= 80 ? "bg-ok" : r.points >= 50 ? "bg-warn" : "bg-bad"}`} style={{ width: `${r.points}%` }} /></div>
+                <span className="text-[11px] font-bold text-mute whitespace-nowrap">{r.month}{r.note ? ` · ${r.note}` : ""}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="card p-6">
+        <h3 className="font-display text-sm font-semibold flex items-center gap-2 mb-3"><I n="warn" size={16} />Мои штрафы</h3>
+        {db.fines.filter((x) => x.userId === me.id).length === 0 ? (
+          <p className="text-[12.5px] font-bold text-mute">Штрафов нет — так держать.</p>
+        ) : (
+          <div className="grid gap-1.5">
+            {db.fines.filter((x) => x.userId === me.id).map((x) => (
+              <div key={x.id} className="flex items-center gap-2.5 border border-bad/30 bg-bad-soft/40 rounded-lg px-3 py-2">
+                <div className="min-w-0 flex-1">
+                  <b className="text-[12.5px] block">{x.reason}</b>
+                  <span className="text-[10.5px] font-bold text-mute">{fmtDateFull(x.ts.slice(0, 10))}</span>
+                </div>
+                <b className="tnum text-bad text-sm">−{fmtMoney(x.amount)}</b>
+              </div>
+            ))}
+          </div>
+        )}
+        <p className="text-[11px] font-bold text-mute mt-3">Штрафы назначает администратор с указанием причины; суммы вычитаются из расчёта за период.</p>
+      </div>
+
       <Confirm open={confirmOut} onClose={() => setConfirmOut(false)} title="Выйти?" text="Сессия на этом устройстве завершится." yesLabel="Выйти" danger={false}
         onYes={() => logout()} />
     </div>

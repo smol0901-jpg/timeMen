@@ -1,8 +1,8 @@
-import React, { useState } from "react";
-import { useStore, openPunchOf, punchDur } from "../lib/store";
-import { User } from "../lib/types";
-import { MONTHS, WD_FULL, fmtClock, fmtDurH } from "../lib/time";
-import { useNow, Avatar, I, Logo, OnlineDot, useToast, RoleBadge } from "./ui";
+import React, { useEffect, useState } from "react";
+import QRCode from "qrcode";
+import { useStore } from "../lib/store";
+import { MONTHS, WD_FULL, fmtClock, fmtMin } from "../lib/time";
+import { useNow, Avatar, I, Logo, OnlineDot, useToast, Modal } from "./ui";
 
 export default function Login({ onKiosk }: { onKiosk: () => void }) {
   const { db, login, recoverRoot, online } = useStore();
@@ -13,9 +13,15 @@ export default function Login({ onKiosk }: { onKiosk: () => void }) {
   const [err, setErr] = useState("");
   const [rec, setRec] = useState(false);
   const [code, setCode] = useState("");
+  const [qr, setQr] = useState(false);
+  const [qrSrc, setQrSrc] = useState("");
+  useEffect(() => {
+    if (qr) QRCode.toDataURL(window.location.href.split("#")[0], { width: 320, margin: 1 }).then(setQrSrc).catch(() => {});
+  }, [qr]);
 
   const quick: { label: string; u: string; p: string }[] = [
     { label: "root · суперадмин", u: "root", p: "root" },
+    { label: "buh · бухгалтерия", u: "buh", p: "1234" },
     { label: "demo · песочница (без пароля)", u: "demo", p: "" },
   ];
   const emps = db.users.filter((x) => x.role === "employee" && x.active && !x.password).slice(0, 4);
@@ -50,7 +56,7 @@ export default function Login({ onKiosk }: { onKiosk: () => void }) {
                     <b className="text-[13px] block truncate">{user?.name}</b>
                     <span className="text-[10.5px] text-steel-400 font-bold uppercase">на смене</span>
                   </div>
-                  <span className="font-mono tnum font-bold text-ok text-sm">{fmtDurH(punchDur(x, db.settings.breakMin, true))}</span>
+                  <span className="font-mono tnum font-bold text-steel-200 text-[12px]">с {fmtMin(x.tin)}</span>
                   <span className="w-2 h-2 rounded-full bg-ok pulse-ok" />
                 </div>
               );
@@ -92,8 +98,17 @@ export default function Login({ onKiosk }: { onKiosk: () => void }) {
 
           <div className="mt-5 grid gap-2">
             <button className="btn btn-dark !h-11" onClick={onKiosk}><I n="desk" size={17} />Режим терминала (киоск у проходной)</button>
+            <button className="btn btn-ghost !h-11" onClick={() => setQr(true)}><I n="qr" size={17} />Подключить телефон — QR-код</button>
             <button className="btn btn-ghost btn-sm self-start" onClick={() => setRec(!rec)}><I n="key" size={13} />Забыт пароль суперадмина</button>
           </div>
+
+          <Modal open={qr} onClose={() => setQr(false)} title="Подключение телефона к серверу" w="max-w-sm">
+            <div className="text-center grid gap-3">
+              {qrSrc ? <img src={qrSrc} alt="QR" className="mx-auto w-60 h-60 rounded-xl border border-line" /> : <div className="h-60 grid place-items-center text-mute font-bold">Формируем QR…</div>}
+              <p className="text-[12.5px] text-mute font-bold leading-relaxed">Сотрудник сканирует камерой — открывается приложение, подключённое к серверу. «Добавить на главный экран» — и получится PWA.</p>
+              <div className="rounded-lg bg-paper border border-line px-3 py-2 font-mono text-[12px] font-bold break-all">{window.location.href.split("#")[0]}</div>
+            </div>
+          </Modal>
 
           {rec && (
             <div className="mt-3 card p-4 anim-pop">

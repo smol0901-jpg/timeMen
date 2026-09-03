@@ -18,6 +18,12 @@ export function makeSeed(): DB {
     avatar: null, color: "#171b22", bio: "Полный контроль системы. Пароль меняется в профиле; резервный код восстановления хранится в зашифрованном виде.",
     active: true, createdAt: iso(now),
   };
+  const buh: User = {
+    id: "u-buh", username: "buh", password: "1234", name: "Бухгалтерия",
+    role: "accountant", workshopId: null, positionId: null, payMode: "hour", rate: 0, shiftCost: 0,
+    avatar: null, color: "#0f8b8d", bio: "Получает расчёты после подтверждения периодов администратором.",
+    active: true, createdAt: iso(now),
+  };
   const demo: User = {
     id: "u-demo", username: "demo", password: "", name: "Демо Сотрудник",
     role: "employee", workshopId: "w-meat", positionId: "p-deboner", payMode: "piece", rate: 0, shiftCost: 0,
@@ -35,8 +41,8 @@ export function makeSeed(): DB {
   }
 
   const db: DB = {
-    v: 5,
-    users: [root, demo],
+    v: 6,
+    users: [root, buh, demo],
     workshops: [
       { id: "w-1", name: "Цех №1 — линия", piecework: false, color: "#3f6d9e" },
       { id: "w-meat", name: "Мясной цех — обвалка птицы", piecework: true, color: "#c74436" },
@@ -79,34 +85,39 @@ export function makeSeed(): DB {
     posts: [
       {
         id: uid(), userId: "u-root", pinned: true, ts: iso(now),
-        text: "Добро пожаловать в «СменаЛАН»!\n\nЭто корпоративная стена: публикуйте новости, фото с производства, ссылки и файлы. Здесь же — игры и утилиты для перерыва. Групповые обсуждения цехов — в разделе «Сообщения».",
-        image: null, attachments: [], link: null, bg: "g1", animated: true,
+        text: "Добро пожаловать в «СменаЛАН»!\n\nЭто корпоративная стена: новости, фото с производства, рисунки, ссылки и файлы — до 10 фото за раз. Отмечайте коллег через @, добавляйте сообщения в избранное ⭐. Групповые обсуждения цехов — в «Сообщениях».",
+        image: null, attachments: [], link: null, bg: "g1", animated: true, favs: ["u-demo"],
         likes: ["u-demo"], comments: [
           { id: uid(), userId: "u-demo", text: "Отлично, стена работает!", ts: iso(now) },
         ],
       },
       {
         id: uid(), userId: "u-root", pinned: false, ts: iso(new Date(now.getTime() - 3600e3)),
-        text: "Напоминание: отметки на смену ставим в приложении или на терминале у входа. Не закрыли смену — система закроет её по графику и попросит подтвердить время ухода.",
-        image: null, attachments: [], link: null, bg: null, animated: false,
+        text: "Напоминание: отметки ставим в приложении или на терминале у входа. Вышли вне графика — система попросит указать время «работаю до» и предупредит админа проверить камеры.",
+        image: null, attachments: [], link: null, bg: null, animated: false, favs: [],
         likes: [], comments: [],
       },
     ],
     notices: [
-      { id: uid(), audience: "all", text: "Система запущена. Суперадмин: root / root. Песочница: demo (без пароля).", ts: iso(now), readBy: [] },
+      { id: uid(), audience: "all", text: "Система запущена. Суперадмин: root / root · Бухгалтерия: buh / 1234 · Песочница: demo (без пароля).", ts: iso(now), readBy: [] },
     ],
     audit: [
-      { id: uid(), ts: iso(now), actor: "система", action: "Система", details: "Инициализация новой базы (демо-режим отключён, песочница demo)" },
+      { id: uid(), ts: iso(now), actor: "система", action: "Система", details: "Инициализация новой базы v6 (демо-режим отключён, песочница demo)" },
     ],
     games: [
       { id: uid(), name: "Косынка (в браузере)", url: "https://cardgames.io/solitaire/" },
     ],
     scores: [],
     sensors: [],
+    fines: [],
+    ratings: [],
+    periods: [],
     settings: {
       orgName: "ООО «Продлайн»", orgInn: "ИНН 7701234567 · КПП 770101001", orgAddress: "г. Пролетарск, ул. Заводская, 14",
       dailyNorm: 8, breakMin: 45, overtimeK: 1.5, kioskFree: true, adminPin: "1234",
       aiMode: "std", ollamaOn: false, ollamaUrl: "http://localhost:11434", ollamaModel: "llama3", apiToken: "",
+      kioskTheme: "steel", bestUserId: null, bestOn: true,
+      camNote: "Проверьте записи камер у входа и в цехе за указанный период.",
     },
     perms: defaultPerms(),
   };
