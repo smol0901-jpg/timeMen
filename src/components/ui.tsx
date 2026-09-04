@@ -2,9 +2,7 @@ import React, { createContext, useContext, useEffect, useRef, useState } from "r
 import { useStore } from "../lib/store";
 import { User, Role } from "../lib/types";
 import { ROLE_LABEL } from "../lib/types";
-import { fileSize } from "../lib/time";
 
-// ---------- иконки ----------
 const P: Record<string, React.ReactNode> = {
   clock: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
   cal: <><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M8 3v4M16 3v4M3 10h18" /></>,
@@ -35,7 +33,6 @@ const P: Record<string, React.ReactNode> = {
   check: <path d="M4 12.5l5 5L20 6.5" />,
   x: <path d="M5 5l14 14M19 5L5 19" />,
   plus: <path d="M12 5v14M5 12h14" />,
-  minus: <path d="M5 12h14" />,
   trash: <><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" /><path d="M10 11v6M14 11v6" /></>,
   edit: <><path d="M4 20l1-4L16.5 4.5a2 2 0 013 3L8 19z" /><path d="M14.5 6.5l3 3" /></>,
   send: <><path d="M21 3L10 14" /><path d="M21 3l-7 18-4-7-7-4z" /></>,
@@ -47,7 +44,7 @@ const P: Record<string, React.ReactNode> = {
   play: <path d="M7 4l13 8-13 8z" />,
   pause: <path d="M8 5v14M16 5v14" />,
   stop: <rect x="6" y="6" width="12" height="12" rx="1" />,
-  calc: <><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M8.5 7h7M8.5 12h.01M12 12h.01M15.5 12h.01M8.5 15.5h.01M12 15.5h.01M15.5 15.5v.01M15.5 15.5h.01" /></>,
+  calc: <><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M8.5 7h7M8.5 12h.01M12 12h.01M15.5 12h.01M8.5 15.5h.01M12 15.5h.01M15.5 15.5h.01" /></>,
   download: <><path d="M12 3v11" /><path d="M8 10l4 4 4-4" /><path d="M4 19h16" /></>,
   upload: <><path d="M12 14V3" /><path d="M8 7l4-4 4 4" /><path d="M4 19h16" /></>,
   link: <><path d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1.5 1.5" /><path d="M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1.5-1.5" /></>,
@@ -75,6 +72,9 @@ const P: Record<string, React.ReactNode> = {
   search: <><circle cx="11" cy="11" r="6.5" /><path d="M20 20l-4.5-4.5" /></>,
   qr: <><rect x="4" y="4" width="6" height="6" /><rect x="14" y="4" width="6" height="6" /><rect x="4" y="14" width="6" height="6" /><path d="M14 14h3v3h-3zM20 14v.01M14 20h.01M20 20h.01M17 17h3v3" /></>,
   snake: <><path d="M4 17c0-3 4-3 4-6s-4-3-4-6" /><path d="M20 7c0 3-4 3-4 6s4 3 4 6" /><circle cx="4" cy="5" r="1" /><circle cx="20" cy="19" r="1" /></>,
+  draw: <><path d="M4 20c6 0 4-9 9-9 3 0 2 4 5 4" /><path d="M4 20h16" /></>,
+  heart: <path d="M20.8 4.6a5.5 5.5 0 00-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 00-7.8 7.8l1 1.1L12 21l7.8-7.5 1-1.1a5.5 5.5 0 000-7.8z" />,
+  images: <><rect x="3" y="5" width="18" height="14" rx="2" /><circle cx="9" cy="10" r="1.5" /><path d="M3 16l5-4 4 3 4-3 5 4" /></>,
 };
 
 export function I({ n, size = 18, className = "" }: { n: string; size?: number; className?: string }) {
@@ -86,39 +86,35 @@ export function I({ n, size = 18, className = "" }: { n: string; size?: number; 
   );
 }
 
-export function Logo({ size = 40, dark = false }: { size?: number; dark?: boolean }) {
+export function Logo({ size = 40 }: { size?: number }) {
   return (
-    <span className="inline-flex items-center gap-2.5 select-none">
-      <svg width={size} height={size} viewBox="0 0 512 512">
-        <rect width="512" height="512" rx="116" fill={dark ? "#edf0f3" : "#14181f"} />
-        <g fill="none" stroke="#e56f24" strokeWidth="42" strokeLinecap="round"><path d="M256 108a148 148 0 1 1-139 97" /></g>
-        <path d="M96 148l14 82 80-30z" fill="#e56f24" />
-        <g stroke={dark ? "#14181f" : "#edf0f3"} strokeWidth="28" strokeLinecap="round"><path d="M256 256V168" /><path d="M256 256l60 38" /></g>
-        <circle cx="256" cy="256" r="13" fill="#e56f24" />
-      </svg>
-    </span>
+    <svg width={size} height={size} viewBox="0 0 512 512">
+      <rect width="512" height="512" rx="116" fill="#14181f" />
+      <g fill="none" stroke="#e56f24" strokeWidth="42" strokeLinecap="round"><path d="M256 108a148 148 0 1 1-139 97" /></g>
+      <path d="M96 148l14 82 80-30z" fill="#e56f24" />
+      <g stroke="#edf0f3" strokeWidth="28" strokeLinecap="round"><path d="M256 256V168" /><path d="M256 256l60 38" /></g>
+      <circle cx="256" cy="256" r="13" fill="#e56f24" />
+    </svg>
   );
 }
 
-// ---------- аватар ----------
 export function Avatar({ u, size = 36 }: { u: User | undefined | null; size?: number }) {
   const init = (u?.name || "??").split(" ").map((w) => w[0]).slice(0, 2).join("").toUpperCase();
   return u?.avatar ? (
     <img src={u.avatar} alt="" style={{ width: size, height: size }} className="rounded-full object-cover ring-2 ring-line shrink-0" />
   ) : (
     <span style={{ width: size, height: size, background: u?.color || "#55637a", fontSize: size * 0.36 }}
-      className="rounded-full grid place-items-center text-white font-extrabold shrink-0 ring-2 ring-white/40">
+      className="rounded-full grid place-items-center text-white font-extrabold shrink-0">
       {init}
     </span>
   );
 }
 
 export function RoleBadge({ role }: { role: Role }) {
-  const cls = role === "superadmin" ? "bg-ink text-paper" : role === "admin" ? "bg-accent-soft text-accent-deep" : "bg-paper text-mute";
+  const cls = role === "superadmin" ? "bg-ink text-paper" : role === "admin" ? "bg-accent-soft text-accent-deep" : role === "accountant" ? "bg-night-soft text-night" : "bg-paper text-mute";
   return <span className={`badge ${cls}`}>{ROLE_LABEL[role]}</span>;
 }
 
-// ---------- модальные ----------
 export function Modal({ open, onClose, title, children, foot, w = "max-w-lg" }: {
   open: boolean; onClose: () => void; title: React.ReactNode; children: React.ReactNode; foot?: React.ReactNode; w?: string;
 }) {
@@ -138,7 +134,7 @@ export function Modal({ open, onClose, title, children, foot, w = "max-w-lg" }: 
           <button className="w-8 h-8 rounded-lg grid place-items-center text-mute hover:bg-paper transition" onClick={onClose}><I n="x" size={16} /></button>
         </div>
         <div className="p-5 overflow-y-auto">{children}</div>
-        {foot && <div className="px-5 py-3.5 border-t border-line flex justify-end gap-2 shrink-0 bg-paper/40">{foot}</div>}
+        {foot && <div className="px-5 py-3.5 border-t border-line flex justify-end gap-2 shrink-0 bg-paper/40 flex-wrap">{foot}</div>}
       </div>
     </div>
   );
@@ -158,7 +154,6 @@ export function Confirm({ open, onClose, title, text, onYes, danger = true, yesL
   );
 }
 
-// ---------- тосты ----------
 type Tone = "ok" | "bad" | "info";
 const ToastCtx = createContext<{ toast: (t: string, tone?: Tone) => void }>({ toast: () => {} });
 export const useToast = () => useContext(ToastCtx);
@@ -188,23 +183,19 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   );
 }
 
-// ---------- разное ----------
 export function useNow(ms = 1000): Date {
   const [n, setN] = useState(() => new Date());
-  useEffect(() => {
-    const t = setInterval(() => setN(new Date()), ms);
-    return () => clearInterval(t);
-  }, [ms]);
+  useEffect(() => { const t = setInterval(() => setN(new Date()), ms); return () => clearInterval(t); }, [ms]);
   return n;
 }
 
 export function OnlineDot() {
   const { online, serverVer } = useStore();
   return (
-    <span title={online ? `LAN-сервер онлайн · версия базы ${serverVer} · реальное время` : "LAN-сервер недоступен — локальный режим"}
+    <span title={online ? `LAN-сервер онлайн · база v${serverVer} · реальное время` : "Сервер недоступен — локальный режим"}
       className="inline-flex items-center gap-1.5 text-[11px] font-extrabold text-mute">
       <span className={`w-2 h-2 rounded-full ${online ? "bg-ok pulse-ok" : "bg-warn blink"}`} />
-      <span className="hidden sm:inline">{online ? `Сервер · синхронно (v${serverVer})` : "Локальный режим"}</span>
+      <span className="hidden sm:inline">{online ? `Сервер · v${serverVer}` : "Локальный режим"}</span>
     </span>
   );
 }
@@ -232,9 +223,9 @@ export function WeekBars({ data, h = 110 }: { data: { label: string; plan: numbe
       {data.map((d, i) => (
         <div key={i} className="flex-1 flex flex-col items-center gap-1 min-w-0 h-full justify-end">
           <div className="w-full flex items-end justify-center gap-1 flex-1">
-            <div className="w-2.5 sm:w-3.5 rounded-t bg-line transition-all" style={{ height: `${(d.plan / max) * 100}%` }} title="план" />
+            <div className="w-2.5 sm:w-3.5 rounded-t bg-line transition-all" style={{ height: `${(d.plan / max) * 100}%` }} />
             <div className={`w-2.5 sm:w-3.5 rounded-t transition-all ${d.fact >= d.plan ? "bg-ok" : d.fact > 0 ? "bg-accent" : "bg-bad/50"}`}
-              style={{ height: `${Math.max(2, (d.fact / max) * 100)}%` }} title="факт" />
+              style={{ height: `${Math.max(2, (d.fact / max) * 100)}%` }} />
           </div>
           <span className="text-[10px] font-extrabold text-mute truncate">{d.label}</span>
         </div>
@@ -292,16 +283,6 @@ export function Empty({ icon, title, text }: { icon: string; title: string; text
   );
 }
 
-export function Progress({ val, tone = "accent" }: { val: number; tone?: "accent" | "ok" | "bad" | "night" }) {
-  const v = Math.max(0, Math.min(1, val));
-  const c = tone === "ok" ? "bg-ok" : tone === "bad" ? "bg-bad" : tone === "night" ? "bg-night" : "bg-accent";
-  return (
-    <div className="h-1.5 rounded-full bg-line overflow-hidden">
-      <div className={`h-full ${c} rounded-full transition-all duration-500`} style={{ width: `${v * 100}%` }} />
-    </div>
-  );
-}
-
 export function StatTile({ icon, tone, label, val, sub }: { icon: string; tone: string; label: string; val: string; sub?: string }) {
   const tones: Record<string, string> = {
     accent: "bg-accent-soft text-accent-deep", ok: "bg-ok-soft text-ok", bad: "bg-bad-soft text-bad",
@@ -318,15 +299,3 @@ export function StatTile({ icon, tone, label, val, sub }: { icon: string; tone: 
     </div>
   );
 }
-
-export function CopyBtn({ text, label }: { text: string; label?: string }) {
-  const { toast } = useToast();
-  return (
-    <button className="btn btn-ghost btn-sm" onClick={() => { navigator.clipboard?.writeText(text).catch(() => {}); toast("Скопировано в буфер", "ok"); }}>
-      <I n="copy" size={13} />{label || "Копировать"}
-    </button>
-  );
-}
-
-export { fileSize };
-export { shrinkImage } from "../lib/store";

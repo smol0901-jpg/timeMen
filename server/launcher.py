@@ -1,540 +1,622 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""СменаЛАН — локальный сервер для Wi-Fi сети.
-Живёт в трее: ссылка для сотрудников, QR-код, настройки, резервные копии.
-База — SQLite (server/data), без ограничения места. Запуск: python launcher.py [--console]
+"""СменаЛАН — локальный LAN-сервер: HTTP + SQLite + трей + автокопии.
+Запуск: python launcher.py [--console] [--port 8080]
 """
-import base64, datetime as dt, http.server, io, json, os, re, socket, socketserver, sqlite3, subprocess, sys, threading, time, urllib.parse, webbrowser
+import base64, datetime, io, json, os, socket, sqlite3, sys, threading, time, urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
-DIST = os.path.normpath(os.path.join(ROOT, "..", "dist"))
-DATA = os.path.join(ROOT, "data")
-FILES = os.path.join(DATA, "files")
-BACKUPS = os.path.join(DATA, "backups")
-LOG_FILE = os.path.join(ROOT, "server.log")
-CONFIG_FILE = os.path.join(DATA, "server.json")
-SQL_FILE = os.path.join(DATA, "smenalan.sqlite")
-MIRROR = os.path.join(DATA, "db.json")
+BASE = Path(__file__).resolve().parent
+DIST = BASE.parent / "dist"
+DATA = BASE / "data"
+FILES = DATA / "files"
+BACKUPS = DATA / "backups"
+DBF = DATA / "smenalan.sqlite"
+LOGF = BASE / "server.log"
+SETTINGS_F = DATA / "server_settings.json"
+DB_VERSION = 7
+CAM_KEEP_DAYS = 120
 START = time.time()
 
-MIME = {".html": "text/html; charset=utf-8", ".js": "application/javascript", ".css": "text/css", ".svg": "image/svg+xml",
-        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webmanifest": "application/manifest+json",
-        ".json": "application/json", ".ico": "image/x-icon", ".woff2": "font/woff2", ".webm": "video/webm", ".mp4": "video/mp4"}
+for d in (DATA, FILES, BACKUPS):
+    d.mkdir(parents=True, exist_ok=True)
+
 
 def log(msg):
-    line = "[%s] %s" % (dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), msg)
-    print(line)
+    line = f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}"
+    print(line, flush=True)
     try:
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
+        with open(LOGF, "a", encoding="utf-8") as f:
             f.write(line + "\n")
-    except Exception:
+    except OSError:
         pass
 
-def ensure_dirs():
-    for d in (DATA, FILES, BACKUPS):
-        os.makedirs(d, exist_ok=True)
 
-def load_config():
-    cfg = {"port": 8080, "autostart": False, "token": "", "last_backup": ""}
-    try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            cfg.update(json.load(f))
-    except Exception:
-        pass
-    return cfg
+# ---------------- SQLite ----------------
+_lock = threading.Lock()
 
-def save_config(cfg):
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
 
-CFG = load_config()
-LOCK = threading.Lock()
-
-# ---------- SQLite ----------
 def conn():
-    c = sqlite3.connect(SQL_FILE, timeout=10)
+    c = sqlite3.connect(DBF, timeout=10)
     c.execute("CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL DEFAULT 0, data TEXT, updated TEXT)")
-    c.execute("CREATE TABLE IF NOT EXISTS sensors (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, value REAL, unit TEXT, ts TEXT)")
-    c.execute("CREATE TABLE IF NOT EXISTS requests_log (id INTEGER PRIMARY KEY AUTOINCREMENT, method TEXT, path TEXT, ts TEXT)")
     return c
 
+
 def get_state():
-    with LOCK:
+    with _lock:
         c = conn()
         row = c.execute("SELECT version FROM state WHERE id=1").fetchone()
         c.close()
-    return row[0] if row else 0
+        return int(row[0]) if row else 0
+
 
 def get_db():
-    with LOCK:
+    with _lock:
         c = conn()
         row = c.execute("SELECT version, data FROM state WHERE id=1").fetchone()
         c.close()
-    return (row[0], row[1]) if row and row[1] else (0, None)
+        if not row or not row[1]:
+            return 0, None
+        return int(row[0]), json.loads(row[1])
+
 
 def set_db(data_obj, client_version):
-    with LOCK:
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    text = json.dumps(data_obj, ensure_ascii=False)
+    with _lock:
         c = conn()
         cur = c.execute("SELECT version FROM state WHERE id=1").fetchone()
-        stored = cur[0] if cur else 0
+        stored = int(cur[0]) if cur else 0
         ver = max(int(client_version or 0), stored + 1)
-        text = json.dumps(data_obj, ensure_ascii=False)
-        now = dt.datetime.now().isoformat(timespec="seconds")
         if cur:
             c.execute("UPDATE state SET version=?, data=?, updated=? WHERE id=1", (ver, text, now))
         else:
             c.execute("INSERT INTO state (id, version, data, updated) VALUES (1,?,?,?)", (ver, text, now))
-        c.commit(); c.close()
-    try:
-        with open(MIRROR, "w", encoding="utf-8") as f:
+        c.commit()
+        c.close()
+    try:  # зеркало db.json
+        with open(DATA / "db.json", "w", encoding="utf-8") as f:
             f.write(text)
-    except Exception:
+    except OSError:
         pass
-    maybe_weekly_backup(text)
     return ver
 
-def maybe_weekly_backup(text=None):
-    try:
-        last = CFG.get("last_backup") or ""
-        if last and (dt.datetime.now() - dt.datetime.fromisoformat(last)).days < 7:
-            return None
-        if text is None:
-            _, text = get_db()
-        if not text:
-            return None
-        name = "smenalan-%s.json" % dt.datetime.now().strftime("%Y%m%d-%H%M")
-        path = os.path.join(BACKUPS, name)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(text)
-        CFG["last_backup"] = dt.datetime.now().isoformat(timespec="seconds")
-        save_config(CFG)
-        log("Резервная копия: %s" % path)
-        return path
-    except Exception as e:
-        log("Ошибка резервной копии: %s" % e)
+
+def do_backup(tag="auto"):
+    ver, data = get_db()
+    if data is None:
         return None
-
-def net_ip():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "127.0.0.1"
-
-IP = net_ip()
-PORT = int(CFG.get("port") or 8080)
-
-# ---------- HTTP ----------
-class H(http.server.BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-
-    def log_message(self, fmt, *args):
-        pass
-
-    def _send(self, code, body, ctype="application/json; charset=utf-8"):
-        if isinstance(body, (dict, list)):
-            body = json.dumps(body, ensure_ascii=False).encode("utf-8")
-        elif isinstance(body, str):
-            body = body.encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
+    name = f"smenalan-{datetime.datetime.now():%Y%m%d-%H%M%S}-{tag}-v{ver}.json"
+    p = BACKUPS / name
+    p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    # чистка: оставить 20 последних
+    olds = sorted(BACKUPS.glob("smenalan-*.json"))[:-20]
+    for o in olds:
         try:
-            self.wfile.write(body)
+            o.unlink()
+        except OSError:
+            pass
+    return name
+
+
+def backup_loop():
+    last = None
+    while True:
+        today = datetime.date.today()
+        weekday = today.weekday()  # 0 = Пн
+        if (last != today) and (weekday == 0 or not any(BACKUPS.glob("smenalan-*-auto-*.json"))):
+            try:
+                n = do_backup("auto")
+                if n:
+                    log(f"Еженедельная резервная копия: {n}")
+                last = today
+            except Exception as e:
+                log(f"Ошибка автокопии: {e}")
+        time.sleep(3600)
+
+
+def cleanup_camshots():
+    """Снимки веб-камер храним CAM_KEEP_DAYS дней."""
+    try:
+        ver, data = get_db()
+        if not data or "camshots" not in data:
+            return
+        cut = (datetime.datetime.now() - datetime.timedelta(days=CAM_KEEP_DAYS)).isoformat()
+        before = len(data.get("camshots", []))
+        data["camshots"] = [s for s in data.get("camshots", []) if s.get("ts", "9999") >= cut]
+        if len(data["camshots"]) != before:
+            set_db(data, ver)
+            log(f"Очистка снимков старше {CAM_KEEP_DAYS} дней: удалено {before - len(data['camshots'])}")
+    except Exception as e:
+        log(f"Ошибка очистки снимков: {e}")
+
+
+# ---------------- настройки сервера ----------------
+def load_settings():
+    if SETTINGS_F.exists():
+        try:
+            return json.loads(SETTINGS_F.read_text(encoding="utf-8"))
         except Exception:
             pass
+    return {"port": 8080, "token": "", "autostart": False}
+
+
+def save_settings(s):
+    SETTINGS_F.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# ---------------- сеть ----------------
+def local_ips():
+    ips = []
+    try:
+        st = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        st.connect(("8.8.8.8", 80))
+        ips.append(st.getsockname()[0])
+        st.close()
+    except OSError:
+        pass
+    try:
+        for _, _, addrs in socket.gethostbyname_ex(socket.gethostname())[2:]:
+            for a in addrs:
+                if a not in ips and not a.startswith("127."):
+                    ips.append(a)
+    except OSError:
+        pass
+    return ips or ["127.0.0.1"]
+
+
+def find_port(prefer):
+    for p in range(prefer, prefer + 20):
+        try:
+            s = socket.socket()
+            s.bind(("0.0.0.0", p))
+            s.close()
+            return p
+        except OSError:
+            continue
+    return prefer
+
+
+SETTINGS = load_settings()
+PORT = find_port(int(SETTINGS.get("port", 8080)))
+
+MIME = {".html": "text/html; charset=utf-8", ".js": "application/javascript", ".css": "text/css",
+        ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".webmanifest": "application/manifest+json", ".json": "application/json", ".ico": "image/x-icon",
+        ".woff2": "font/woff2", ".mp4": "video/mp4", ".webm": "video/webm"}
+
+
+class H(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *a):
+        pass
+
+    def _cors(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-API-Token")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+
+    def _send(self, code, obj):
+        body = json.dumps(obj, ensure_ascii=False).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self._cors()
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _file(self, path: Path):
+        if not path.is_file():
+            return False
+        body = path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", MIME.get(path.suffix.lower(), "application/octet-stream"))
+        self.send_header("Content-Length", str(len(body)))
+        self._cors()
+        self.end_headers()
+        self.wfile.write(body)
+        return True
 
     def _body(self):
-        n = int(self.headers.get("Content-Length") or 0)
+        n = int(self.headers.get("Content-Length", 0) or 0)
         raw = self.rfile.read(n) if n else b""
         try:
-            return json.loads(raw.decode("utf-8"))
+            return json.loads(raw.decode("utf-8")) if raw else {}
         except Exception:
-            return None
+            return {}
 
     def _token_ok(self):
-        t = CFG.get("token") or ""
-        if not t:
+        need = SETTINGS.get("token") or ""
+        if not need:
             return True
-        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        return self.headers.get("X-API-Token") == t or q.get("token", [""])[0] == t
-
-    def _data(self):
-        _, text = get_db()
+        got = self.headers.get("X-API-Token") or ""
+        if got == need:
+            return True
         try:
-            return json.loads(text) if text else None
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            return (q.get("token", [""])[0]) == need
         except Exception:
-            return None
+            return False
 
     def do_OPTIONS(self):
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type,X-API-Token")
+        self._cors()
+        self.send_header("Content-Length", "0")
         self.end_headers()
 
     def do_GET(self):
-        p = urllib.parse.urlparse(self.path)
-        path = p.path
-        q = urllib.parse.parse_qs(p.query)
+        path = self.path.split("?")[0]
         try:
             if path == "/api/ping":
-                return self._send(200, {"ok": True, "server": "smenalan", "time": dt.datetime.now().isoformat(timespec="seconds")})
+                return self._send(200, {"ok": True, "app": "СменаЛАН"})
             if path == "/api/state":
                 return self._send(200, {"version": get_state()})
             if path == "/api/db":
-                ver, text = get_db()
-                if not text:
-                    return self._send(404, {"error": "empty"})
-                return self._send(200, {"version": ver, "data": json.loads(text)})
+                ver, data = get_db()
+                return self._send(200, {"version": ver, "data": data})
             if path == "/api/health":
-                backups = sorted(os.listdir(BACKUPS)) if os.path.isdir(BACKUPS) else []
-                size = os.path.getsize(SQL_FILE) if os.path.exists(SQL_FILE) else 0
-                return self._send(200, {"ok": True, "version": get_state(), "uptime_sec": int(time.time() - START), "port": PORT,
-                                        "sqlite_bytes": size, "backups": len(backups), "last_backup": CFG.get("last_backup") or None})
+                ver, _ = get_db()
+                return self._send(200, {
+                    "ok": True, "version": ver, "port": PORT,
+                    "uptime_sec": int(time.time() - START),
+                    "db_kb": int(DBF.stat().st_size / 1024) if DBF.exists() else 0,
+                    "backups": [{"name": p.name, "size_kb": int(p.stat().st_size / 1024)} for p in sorted(BACKUPS.glob("smenalan-*.json"), reverse=True)[:10]],
+                })
+            if path == "/api/today":
+                _, d = get_db()
+                res = []
+                if d:
+                    for p in d.get("punches", []):
+                        if p.get("tout") is None:
+                            res.append(p)
+                return self._send(200, {"on_shift": res})
+            if path == "/api/employees":
+                _, d = get_db()
+                users = []
+                if d:
+                    for u in d.get("users", []):
+                        c = {k: v for k, v in u.items() if k != "password"}
+                        users.append(c)
+                return self._send(200, {"users": users})
+            if path.startswith("/api/punches"):
+                _, d = get_db()
+                date = ""
+                if "?" in self.path:
+                    from urllib.parse import parse_qs, urlparse
+                    date = parse_qs(urlparse(self.path).query).get("date", [""])[0]
+                ps = [p for p in (d or {}).get("punches", []) if not date or p.get("date") == date]
+                return self._send(200, {"punches": ps})
+            if path.startswith("/api/stats"):
+                _, d = get_db()
+                return self._send(200, {"users": [(u.get("name"), u.get("username")) for u in (d or {}).get("users", [])],
+                                       "punches": (d or {}).get("punches", []), "schedule": (d or {}).get("schedule", [])})
+            if path.startswith("/api/production"):
+                _, d = get_db()
+                return self._send(200, {"production": (d or {}).get("production", []), "products": (d or {}).get("products", [])})
+            if path.startswith("/api/camshots"):
+                _, d = get_db()
+                shots = (d or {}).get("camshots", [])
+                return self._send(200, {"camshots": [{k: (v if k != "src" else "") for k, v in s.items()} for s in shots[:200]]})
+            if path.startswith("/api/logs"):
+                _, d = get_db()
+                return self._send(200, {"logs": (d or {}).get("audit", [])[:500]})
+            if path.startswith("/api/sensors/latest"):
+                from urllib.parse import parse_qs, urlparse
+                name = parse_qs(urlparse(self.path).query).get("name", [""])[0]
+                _, d = get_db()
+                pts = [p for p in (d or {}).get("sensors", []) if p.get("name") == name]
+                return self._send(200, {"latest": pts[0] if pts else None})
+            if path == "/api/backups":
+                return self._send(200, {"backups": [{"name": p.name, "size_kb": int(p.stat().st_size / 1024)} for p in sorted(BACKUPS.glob("smenalan-*.json"), reverse=True)]})
             if path == "/api/endpoints":
                 return self._send(200, {"endpoints": [
-                    "GET /api/ping", "GET /api/health", "GET /api/state", "GET /api/db", "POST /api/db", "GET /api/today",
-                    "GET /api/employees", "GET /api/punches?date=YYYY-MM-DD", "GET /api/stats?from&to", "GET /api/production?from&to",
-                    "GET /api/logs?limit=N", "GET /api/sensors", "GET /api/sensors/latest?name=X", "POST /api/sensors",
-                    "POST /api/backup", "GET /api/backups", "POST /api/files", "GET /files/<имя>"]})
-            if path == "/api/today":
-                d = self._data()
-                today = dt.date.today().isoformat()
-                if not d:
-                    return self._send(200, {"today": today, "on_shift": [], "punches": []})
-                names = {u["id"]: u["name"] for u in d.get("users", [])}
-                punches = [x for x in d.get("punches", []) if x.get("date") == today]
-                on_shift = [{"userId": x["userId"], "name": names.get(x["userId"], "?"), "tin": x["tin"]}
-                            for x in punches if x.get("tout") is None]
-                return self._send(200, {"today": today, "on_shift": on_shift,
-                                        "punches": [{"name": names.get(x["userId"], "?"), "tin": x["tin"], "tout": x.get("tout")} for x in punches]})
-            if path == "/api/employees":
-                d = self._data()
-                if not d:
-                    return self._send(200, [])
-                ws = {w["id"]: w["name"] for w in d.get("workshops", [])}
-                return self._send(200, [{"id": u["id"], "username": u["username"], "name": u["name"], "role": u["role"],
-                                         "workshop": ws.get(u.get("workshopId") or "", None), "active": u.get("active", True)}
-                                        for u in d.get("users", [])])
-            if path == "/api/punches":
-                d = self._data()
-                date = q.get("date", [dt.date.today().isoformat()])[0]
-                names = {u["id"]: u["name"] for u in (d or {}).get("users", [])}
-                out = [{"name": names.get(x["userId"], "?"), "date": x["date"], "tin": x["tin"], "tout": x.get("tout")}
-                       for x in (d or {}).get("punches", []) if x.get("date") == date]
-                return self._send(200, out)
-            if path == "/api/stats":
-                d = self._data()
-                f = q.get("from", [dt.date.today().replace(day=1).isoformat()])[0]
-                t = q.get("to", [dt.date.today().isoformat()])[0]
-                plan = {"day": 480, "night": 690}
-                res = {}
-                for u in (d or {}).get("users", []):
-                    if u.get("role") != "employee":
-                        continue
-                    res[u["id"]] = {"name": u["name"], "plan_min": 0, "fact_min": 0}
-                for s in (d or {}).get("schedule", []):
-                    if s["date"] < f or s["date"] > t or s["userId"] not in res:
-                        continue
-                    res[s["userId"]]["plan_min"] += plan.get(s["type"], 0)
-                for p in (d or {}).get("punches", []):
-                    if p["date"] < f or p["date"] > t or p["userId"] not in res or p.get("tout") is None:
-                        continue
-                    raw = p["tout"] - p["tin"] if p["tout"] >= p["tin"] else 1440 - p["tin"] + p["tout"]
-                    if raw > 360:
-                        raw -= (d or {}).get("settings", {}).get("breakMin", 45)
-                    res[p["userId"]]["fact_min"] += max(0, raw)
-                return self._send(200, list(res.values()))
-            if path == "/api/production":
-                d = self._data()
-                f = q.get("from", ["2000-01-01"])[0]
-                t = q.get("to", ["2999-01-01"])[0]
-                names = {u["id"]: u["name"] for u in (d or {}).get("users", [])}
-                prods = {p["id"]: p for p in (d or {}).get("products", [])}
-                out = []
-                for r in (d or {}).get("production", []):
-                    if f <= r["date"] <= t:
-                        pr = prods.get(r["productId"], {})
-                        out.append({"date": r["date"], "name": names.get(r["userId"], "?"), "product": pr.get("name", "?"),
-                                    "qty": r["qty"], "unit": pr.get("unit", ""), "sum": round(r["qty"] * pr.get("price", 0), 2)})
-                return self._send(200, out)
-            if path == "/api/logs":
-                d = self._data()
-                limit = int(q.get("limit", ["100"])[0])
-                return self._send(200, (d or {}).get("audit", [])[:limit])
-            if path == "/api/sensors/latest":
-                name = q.get("name", [""])[0]
-                with LOCK:
-                    c = conn()
-                    if name:
-                        row = c.execute("SELECT name, value, unit, ts FROM sensors WHERE name=? ORDER BY id DESC LIMIT 1", (name,)).fetchone()
-                    else:
-                        row = c.execute("SELECT name, value, unit, ts FROM sensors ORDER BY id DESC LIMIT 1").fetchone()
-                    c.close()
-                return self._send(200, ({"name": row[0], "value": row[1], "unit": row[2], "ts": row[3]} if row else None))
-            if path == "/api/sensors":
-                limit = int(q.get("limit", ["100"])[0])
-                with LOCK:
-                    c = conn()
-                    rows = c.execute("SELECT name, value, unit, ts FROM sensors ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-                    c.close()
-                return self._send(200, [{"name": r[0], "value": r[1], "unit": r[2], "ts": r[3]} for r in rows])
-            if path == "/api/backups":
-                items = sorted(os.listdir(BACKUPS), reverse=True) if os.path.isdir(BACKUPS) else []
-                return self._send(200, [{"file": x, "size": os.path.getsize(os.path.join(BACKUPS, x))} for x in items])
+                    "GET /api/ping", "GET /api/health", "GET /api/state", "GET /api/db", "POST /api/db",
+                    "GET /api/today", "GET /api/employees", "GET /api/punches?date=", "GET /api/stats",
+                    "GET /api/production", "GET /api/camshots", "GET /api/logs", "GET /api/sensors/latest?name=",
+                    "POST /api/sensors", "POST /api/webcam", "POST /api/telegram", "POST /api/backup",
+                    "GET /api/backups", "POST /api/files", "GET /files/<имя>", "GET /api/endpoints"]})
             if path.startswith("/files/"):
                 name = os.path.basename(path)
-                fp = os.path.join(FILES, name)
-                if not os.path.isfile(fp):
-                    return self._send(404, {"error": "not found"})
-                ext = os.path.splitext(name)[1].lower()
-                with open(fp, "rb") as f:
-                    return self._send(200, f.read(), MIME.get(ext, "application/octet-stream"))
-            # статика из dist
+                return self._file(FILES / name) or self._send(404, {"error": "not found"})
+            # статика
             rel = path.lstrip("/") or "index.html"
-            fp = os.path.normpath(os.path.join(DIST, rel))
-            if not fp.startswith(DIST) or not os.path.isfile(fp):
-                fp = os.path.join(DIST, "index.html")
-            ext = os.path.splitext(fp)[1].lower()
-            with open(fp, "rb") as f:
-                return self._send(200, f.read(), MIME.get(ext, "application/octet-stream"))
+            fp = (DIST / rel).resolve()
+            if DIST.resolve() in fp.parents or fp == DIST.resolve():
+                if fp.is_file():
+                    return self._file(fp)
+                if (DIST / "index.html").is_file():
+                    return self._file(DIST / "index.html")
+            return self._send(404, {"error": "not found"})
         except Exception as e:
-            log("GET %s ошибка: %s" % (path, e))
+            log(f"GET {path} error: {e}")
             return self._send(500, {"error": str(e)})
 
     def do_POST(self):
-        p = urllib.parse.urlparse(self.path).path
+        path = self.path.split("?")[0]
         try:
-            if p == "/api/db":
-                body = self._body()
-                if not body or "data" not in body:
-                    return self._send(400, {"error": "need {data}"})
-                if not isinstance(body["data"], dict) or body["data"].get("v") not in (5, 6):
-                    return self._send(400, {"error": "bad db version (need v=5 or v=6)"})
+            body = self._body()
+            if path == "/api/db":
+                if not isinstance(body.get("data"), dict) or body["data"].get("v") != DB_VERSION:
+                    return self._send(400, {"error": f"bad db version (need v={DB_VERSION})"})
                 ver = set_db(body["data"], body.get("version", 0))
                 return self._send(200, {"ok": True, "version": ver})
-            if p == "/api/sensors":
+            if path == "/api/sensors":
                 if not self._token_ok():
                     return self._send(403, {"error": "token required"})
-                b = self._body() or {}
-                name = str(b.get("name") or "sensor")[:64]
-                value = float(b.get("value", 0))
-                unit = str(b.get("unit") or "")[:16]
-                ts = dt.datetime.now().isoformat(timespec="seconds")
-                with LOCK:
-                    c = conn()
-                    c.execute("INSERT INTO sensors (name, value, unit, ts) VALUES (?,?,?,?)", (name, value, unit, ts))
-                    c.commit(); c.close()
-                return self._send(200, {"ok": True, "name": name, "value": value, "ts": ts})
-            if p == "/api/backup":
+                ver, d = get_db()
+                if not d:
+                    return self._send(400, {"error": "db empty"})
+                d.setdefault("sensors", []).insert(0, {
+                    "id": str(int(time.time() * 1000)), "name": str(body.get("name", "sensor")),
+                    "value": body.get("value", 0), "unit": str(body.get("unit", "")),
+                    "ts": datetime.datetime.now().isoformat(timespec="seconds")})
+                d["sensors"] = d["sensors"][:2000]
+                set_db(d, ver)
+                return self._send(200, {"ok": True})
+            if path == "/api/webcam":
                 if not self._token_ok():
                     return self._send(403, {"error": "token required"})
-                path = maybe_weekly_backup()
-                if path is None:
-                    CFG["last_backup"] = ""
-                    path = maybe_weekly_backup()
-                return self._send(200, {"ok": True, "file": os.path.basename(path or "")})
-            if p == "/api/files":
+                data64 = body.get("dataBase64", "")
+                user_id = str(body.get("userId", ""))
+                if not data64:
+                    return self._send(400, {"error": "no data"})
+                raw = base64.b64decode(data64)
+                name = f"cam_{user_id}_{datetime.datetime.now():%Y%m%d_%H%M%S}.jpg"
+                (FILES / name).write_bytes(raw)
+                # чистка файлов старше срока
+                cut = time.time() - CAM_KEEP_DAYS * 86400
+                for f in FILES.glob("cam_*.jpg"):
+                    try:
+                        if f.stat().st_mtime < cut:
+                            f.unlink()
+                    except OSError:
+                        pass
+                log(f"Снимок веб-камеры сохранён: {name} ({len(raw)//1024} КБ)")
+                return self._send(200, {"ok": True, "url": f"/files/{name}"})
+            if path == "/api/telegram":
                 if not self._token_ok():
                     return self._send(403, {"error": "token required"})
-                b = self._body() or {}
-                name = re.sub(r"[^A-Za-zА-Яа-яЁё0-9._-]", "_", str(b.get("name") or "file"))[:80] or "file"
-                b64 = str(b.get("dataBase64") or "")
-                data = base64.b64decode(b64)
-                fname = "%s_%s" % (dt.datetime.now().strftime("%Y%m%d%H%M%S"), name)
-                with open(os.path.join(FILES, fname), "wb") as f:
-                    f.write(data)
-                log("Файл сохранён: %s (%d байт)" % (fname, len(data)))
-                return self._send(200, {"ok": True, "url": "/files/" + fname})
-            return self._send(404, {"error": "unknown endpoint"})
+                text = str(body.get("text", ""))
+                _, d = get_db()
+                s = (d or {}).get("settings", {})
+                token, chat = s.get("tgToken", ""), s.get("tgChat", "")
+                if not token or not chat:
+                    return self._send(400, {"error": "telegram not configured"})
+                req = urllib.request.Request(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    data=json.dumps({"chat_id": chat, "text": text}).encode(),
+                    headers={"Content-Type": "application/json"})
+                try:
+                    urllib.request.urlopen(req, timeout=8)
+                    return self._send(200, {"ok": True})
+                except Exception as e:
+                    return self._send(502, {"error": str(e)})
+            if path == "/api/backup":
+                if not self._token_ok():
+                    return self._send(403, {"error": "token required"})
+                n = do_backup("manual")
+                return self._send(200, {"ok": True, "file": n})
+            if path == "/api/files":
+                if not self._token_ok():
+                    return self._send(403, {"error": "token required"})
+                data64 = body.get("dataBase64", "")
+                orig = str(body.get("name", "file"))
+                if not data64:
+                    return self._send(400, {"error": "no data"})
+                ext = os.path.splitext(orig)[1] or ".bin"
+                name = f"f_{int(time.time()*1000)}{ext}"
+                (FILES / name).write_bytes(base64.b64decode(data64))
+                return self._send(200, {"ok": True, "url": f"/files/{name}"})
+            return self._send(404, {"error": "not found"})
         except Exception as e:
-            log("POST %s ошибка: %s" % (p, e))
+            log(f"POST {path} error: {e}")
             return self._send(500, {"error": str(e)})
 
-class ThreadingServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
-    daemon_threads = True
-    allow_reuse_address = True
 
-# ---------- трей ----------
-def make_icon_image():
-    from PIL import Image, ImageDraw
-    img = Image.new("RGBA", (64, 64), (20, 24, 31, 255))
-    d = ImageDraw.Draw(img)
-    d.ellipse([10, 10, 54, 54], outline=(229, 111, 36, 255), width=6)
-    d.line([32, 32, 32, 17], fill=(237, 240, 243, 255), width=5)
-    d.line([32, 32, 43, 39], fill=(237, 240, 243, 255), width=5)
-    d.ellipse([28, 28, 36, 36], fill=(229, 111, 36, 255))
-    return img
+# ---------------- трей ----------------
+def make_icon():
+    try:
+        from PIL import Image, ImageDraw
+        img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        d.rounded_rectangle([2, 2, 62, 62], radius=14, fill=(20, 24, 31, 255))
+        d.arc([14, 14, 50, 50], start=210, end=150, fill=(229, 111, 36, 255), width=6)
+        d.line([32, 32, 32, 20], fill=(237, 240, 243, 255), width=4)
+        d.line([32, 32, 41, 38], fill=(237, 240, 243, 255), width=4)
+        d.ellipse([29, 29, 35, 35], fill=(229, 111, 36, 255))
+        return img
+    except Exception:
+        return None
+
+
+def open_url(url):
+    import webbrowser
+    webbrowser.open(url)
+
 
 def copy_text(text):
-    for cmd in (["clip"], ["xclip", "-selection", "clipboard"], ["pbcopy"]):
-        try:
-            pr = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-            pr.communicate(text.encode("utf-8"))
-            if pr.returncode == 0:
-                return True
-        except Exception:
-            continue
     try:
-        import tkinter as tk
-        r = tk.Tk(); r.withdraw(); r.clipboard_clear(); r.clipboard_append(text); r.update(); r.destroy()
-        return True
-    except Exception:
-        return False
+        import subprocess
+        if sys.platform == "win32":
+            subprocess.run(["clip"], input=text.encode("utf-16le"), check=True)
+        elif sys.platform == "darwin":
+            subprocess.run(["pbcopy"], input=text.encode(), check=True)
+        else:
+            subprocess.run(["xclip", "-selection", "clipboard"], input=text.encode(), check=True)
+        log(f"Скопировано: {text}")
+    except Exception as e:
+        log(f"Не удалось скопировать: {e}")
 
-def show_qr(icon=None, item=None):
+
+def make_qr(text):
     try:
         import qrcode
-        url = "http://%s:%d" % (IP, PORT)
-        img = qrcode.make(url)
-        path = os.path.join(DATA, "qr.png")
-        img.save(path)
-        os.startfile(path) if sys.platform == "win32" else subprocess.Popen(["xdg-open", path])
+        from PIL import Image  # noqa
+        qr = qrcode.QRCode(box_size=8, border=2)
+        qr.add_data(text)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="#14181f", back_color="white")
+        p = DATA / "connect_qr.png"
+        img.save(p)
+        return p
     except Exception as e:
-        log("QR ошибка: %s" % e)
+        log(f"QR: {e}")
+        return None
 
-def write_autostart(enable):
-    if sys.platform != "win32":
-        return
+
+def tray_loop():
     try:
-        startup = os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs\Startup")
-        bat = os.path.join(startup, "smenalan-server.bat")
-        if enable:
-            py = sys.executable
-            with open(bat, "w", encoding="utf-8") as f:
-                f.write('@echo off\r\nstart "" /min "%s" "%s"\r\n' % (py, os.path.abspath(__file__)))
-        elif os.path.exists(bat):
-            os.remove(bat)
-    except Exception as e:
-        log("Автозапуск: %s" % e)
+        import pystray
+    except Exception:
+        log("pystray недоступен — работаем без трея (используйте --console)")
+        while True:
+            time.sleep(3600)
+        return
 
-def show_settings(icon=None, item=None):
-    def run():
+    url = f"http://{local_ips()[0]}:{PORT}"
+    icon_img = make_icon()
+    if icon_img is None:
+        log("Pillow недоступен — иконка трея будет стандартной")
+
+    def on_qr(_icon, _item):
+        p = make_qr(url)
+        if p:
+            open_url(p.as_uri())
+            log(f"QR-код: {p} ({url})")
+
+    def on_settings(_icon, _item):
+        lines = ["СМЕНАЛАН — НАСТРОЙКИ СЕРВЕРА", "=" * 40,
+                 f"1. Порт сейчас: {PORT}",
+                 "2. API-токен (для датчиков/камер/копий): " + (SETTINGS.get("token") or "не задан"),
+                 "3. Автозапуск вместе с Windows: " + ("вкл" if SETTINGS.get("autostart") else "выкл"),
+                 "", "IP-адреса этого компьютера:"]
+        for ip in local_ips():
+            lines.append(f"   http://{ip}:{PORT}")
+        lines += ["", "Введите: порт, 'token <значение>', 'autostart on|off' или Enter — закрыть:"]
         try:
-            import tkinter as tk
-            from tkinter import ttk
-            w = tk.Tk(); w.title("СменаЛАН — настройки сервера"); w.geometry("460x330")
-            w.resizable(False, False)
-            pad = {"padx": 14, "pady": 6}
-            tk.Label(w, text="Порт (нужен перезапуск сервера)", font=("Segoe UI", 9, "bold")).pack(anchor="w", **pad)
-            port = tk.Entry(w, font=("Consolas", 11)); port.insert(0, str(CFG.get("port", 8080))); port.pack(fill="x", **pad)
-            tk.Label(w, text="API-токен для датчиков (пусто = открыто)", font=("Segoe UI", 9, "bold")).pack(anchor="w", **pad)
-            tok = tk.Entry(w, font=("Consolas", 11)); tok.insert(0, str(CFG.get("token", ""))); tok.pack(fill="x", **pad)
-            tk.Label(w, text="Файлы и фото: %s" % FILES, font=("Segoe UI", 8), fg="#666", wraplength=420).pack(anchor="w", **pad)
-            auto = tk.BooleanVar(value=bool(CFG.get("autostart")))
-            ttk.Checkbutton(w, text="Запускать сервер вместе с Windows", variable=auto).pack(anchor="w", **pad)
-            tk.Label(w, text="IP для сотрудников: http://%s:%s" % (IP, port.get() or CFG.get("port")),
-                     font=("Consolas", 10, "bold"), fg="#c85b15").pack(anchor="w", **pad)
-            def ok():
-                try:
-                    CFG["port"] = int(port.get() or 8080)
-                except ValueError:
-                    pass
-                CFG["token"] = tok.get().strip()
-                CFG["autostart"] = bool(auto.get())
-                save_config(CFG)
-                write_autostart(CFG["autostart"])
-                log("Настройки сохранены: порт %s, токен %s, автозапуск %s" % (CFG["port"], "вкл" if CFG["token"] else "выкл", CFG["autostart"]))
-                w.destroy()
-            tk.Button(w, text="Сохранить", command=ok, font=("Segoe UI", 10, "bold")).pack(pady=10)
-            w.mainloop()
-        except Exception as e:
-            log("Окно настроек недоступно (%s). Правьте server/data/server.json вручную." % e)
-    threading.Thread(target=run, daemon=True).start()
+            if sys.platform == "win32":
+                import ctypes
+                ctypes.windll.user32.MessageBoxW(0, "\n".join(lines[:8]), "СменаЛАН — сервер", 0x40)
+            ans = input("\n".join(lines) + "\n> ").strip()
+            if ans.isdigit():
+                SETTINGS["port"] = int(ans)
+                save_settings(SETTINGS)
+                log("Порт изменён — перезапустите сервер")
+            elif ans.startswith("token "):
+                SETTINGS["token"] = ans[6:].strip()
+                save_settings(SETTINGS)
+                log("API-токен обновлён")
+            elif ans.startswith("autostart"):
+                on = ans.endswith("on")
+                SETTINGS["autostart"] = on
+                save_settings(SETTINGS)
+                set_autostart(on)
+                log(f"Автозапуск: {'вкл' if on else 'выкл'}")
+        except Exception:
+            pass
+
+    def on_quit(icon, _item):
+        try:
+            do_backup("shutdown")
+        except Exception:
+            pass
+        icon.stop()
+        os._exit(0)
+
+    # ВАЖНО: меню статическое (не функция-генератор) и создаётся ПОСЛЕ
+    # объявления обработчиков — иначе pystray падает с ошибкой
+    # "menu_builder() missing 1 required positional argument: 'icon'"
+    menu = pystray.Menu(
+        pystray.MenuItem(lambda item: url, None, enabled=False),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Открыть админку", lambda icon, item: open_url(url)),
+        pystray.MenuItem("Скопировать ссылку для сотрудников", lambda icon, item: copy_text(url)),
+        pystray.MenuItem("Показать QR-код (телефонам)", on_qr),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Настройки сервера…", on_settings),
+        pystray.MenuItem("Резервная копия сейчас", lambda icon, item: log(f"Копия: {do_backup('manual')}")),
+        pystray.MenuItem("Открыть журнал server.log", lambda icon, item: open_url(LOGF.as_uri())),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Выйти (остановить сервер)", on_quit),
+    )
+    icon = pystray.Icon("smenalan", icon_img, "СменаЛАН — сервер", menu)
+    icon.run()
+
+
+def set_autostart(on: bool):
+    try:
+        if sys.platform != "win32":
+            return
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
+        cmd = f'"{sys.executable}" "{BASE / "launcher.py"}" --console'
+        if on:
+            winreg.SetValueEx(key, "SmenaLAN Server", 0, winreg.REG_SZ, cmd)
+        else:
+            try:
+                winreg.DeleteValue(key, "SmenaLAN Server")
+            except FileNotFoundError:
+                pass
+        winreg.CloseKey(key)
+    except Exception as e:
+        log(f"Автозапуск: {e}")
+
 
 def main():
-    global PORT
-    ensure_dirs()
     console = "--console" in sys.argv
-    try:
-        httpd = ThreadingServer(("0.0.0.0", PORT), H)
-    except OSError:
-        for cand in range(PORT + 1, PORT + 20):
-            try:
-                httpd = ThreadingServer(("0.0.0.0", cand), H)
-                PORT = cand
-                break
-            except OSError:
-                continue
-        else:
-            log("Нет свободного порта"); sys.exit(1)
+    if "--port" in sys.argv:
+        try:
+            SETTINGS["port"] = int(sys.argv[sys.argv.index("--port") + 1])
+        except Exception:
+            pass
+    global PORT
+    PORT = find_port(int(SETTINGS.get("port", 8080)))
 
-    print("=" * 52)
-    print("  СМЕНАЛАН · локальный сервер (SQLite, реальное время)")
-    print("=" * 52)
-    print("  веб-приложение: %s" % DIST)
-    print("  сервер запущен:  http://%s:%d" % (IP, PORT))
-    print("  ссылка для сотрудников: http://%s:%d" % (IP, PORT))
-    print("  база: %s" % SQL_FILE)
-    print("  фото и файлы: %s" % FILES)
-    print("  резервные копии: %s (еженедельно)" % BACKUPS)
-    print("  правый клик по иконке в трее — меню сервера")
-    print("=" * 52)
-    log("Сервер запущен http://%s:%d (dist=%s, sqlite=%s)" % (IP, PORT, DIST, os.path.exists(SQL_FILE)))
+    if not console and sys.platform == "win32":
+        # одиночный экземпляр
+        try:
+            import ctypes
+            k = ctypes.windll.kernel32
+            k.CreateMutexW(None, True, "SmenaLANServerMutex")
+            if k.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+                print("Сервер уже запущен (живёт в трее).")
+                input("Enter — закрыть…")
+                return
+        except Exception:
+            pass
 
-    t = threading.Thread(target=httpd.serve_forever, daemon=True)
-    t.start()
+    threading.Thread(target=backup_loop, daemon=True).start()
+    threading.Thread(target=cleanup_camshots, daemon=True).start()
+
+    srv = ThreadingHTTPServer(("0.0.0.0", PORT), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    ips = local_ips()
+    print("=" * 52)
+    print("  СМЕНАЛАН · локальный сервер (реальное время)")
+    print("=" * 52)
+    print(f"  веб-приложение: {DIST}")
+    for ip in ips:
+        print(f"  сервер запущен:  http://{ip}:{PORT}")
+    print(f"  база: SQLite ({DBF.name}) · файлы: data/files")
+    print("  правый клик по иконке в трее — ссылка, QR-код, настройки")
+    print("  (закрывать это окно не обязательно)")
+    print("=" * 52)
+    log(f"Сервер запущен на порту {PORT}, IP: {', '.join(ips)}")
 
     if console:
         try:
             while True:
-                time.sleep(60)
+                time.sleep(3600)
         except KeyboardInterrupt:
-            log("Остановлен вручную"); sys.exit(0)
+            log("Остановлен пользователем")
+    else:
+        tray_loop()
 
-    try:
-        import pystray
-        from pystray import Menu, MenuItem
-    except Exception as e:
-        log("pystray недоступен (%s) — работаем в консоли, Ctrl+C для выхода" % e)
-        try:
-            while True:
-                time.sleep(60)
-        except KeyboardInterrupt:
-            sys.exit(0)
-
-    def quit_app(icon, item):
-        log("Сервер остановлен из трея")
-        try:
-            icon.stop()
-        except Exception:
-            pass
-        try:
-            httpd.shutdown()
-        except Exception:
-            pass
-        os._exit(0)
-
-    menu = Menu(
-        MenuItem("СМЕНАЛАН — сервер запущен", None, enabled=False),
-        MenuItem("Открыть: http://%s:%d" % (IP, PORT), lambda i, s: webbrowser.open("http://%s:%d" % (IP, PORT)), default=True),
-        MenuItem("Скопировать ссылку для сотрудников", lambda i, s: copy_text("http://%s:%d" % (IP, PORT))),
-        MenuItem("Показать QR-код для телефона", show_qr),
-        Menu.SEPARATOR,
-        MenuItem("IP: %s:%d (клик — копировать)" % (IP, PORT), lambda i, s: copy_text(str(IP))),
-        MenuItem("Настройки сервера…", show_settings),
-        MenuItem("Резервная копия сейчас", lambda i, s: (CFG.__setitem__("last_backup", ""), maybe_weekly_backup())),
-        MenuItem("Журнал server.log", lambda i, s: os.startfile(LOG_FILE) if sys.platform == "win32" else None),
-        Menu.SEPARATOR,
-        MenuItem("Выйти (остановить сервер)", quit_app),
-    )
-    icon = pystray.Icon("smenalan", make_icon_image(), "СменаЛАН · http://%s:%d" % (IP, PORT), menu)
-    try:
-        icon.run()
-    except Exception as e:
-        log("Трей недоступен (%s) — сервер работает в фоне" % e)
-        try:
-            while True:
-                time.sleep(60)
-        except KeyboardInterrupt:
-            sys.exit(0)
 
 if __name__ == "__main__":
     main()

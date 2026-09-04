@@ -10,5 +10,4 @@ if %ERRORLEVEL%==0 (
 ) else (
     python install.py
 )
-echo.
 pause

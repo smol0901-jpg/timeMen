@@ -1,43 +1,136 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   DB, User, Device, ModuleId, Punch, ShiftCell, ShiftType, WorkRequest, RequestKind,
-  Settings, PermMatrix, Role, Workshop, Position, Product, PayMode, Attachment, ScheduleEvent, PayPeriod,
+  Settings, PermMatrix, Role, Workshop, Position, Product, PayPeriod, Attachment, ScheduleEvent, PayMode,
 } from "./types";
-import { SHIFT_META, defaultPerms, MODULES } from "./types";
-import { makeSeed } from "./seed";
+import { SHIFT_META, defaultPerms } from "./types";
 import {
-  todayKey, nowMin, uid, rangeKeys, fmtMin, fmtDur, fmtDateFull, fmtDurH, addDaysKey, monthTitle,
+  todayKey, nowMin, uid, rangeKeys, fmtMin, fmtDur, fmtDurH, fmtDateFull, addDaysKey, monthTitle,
+  monthStart, monthEnd, daysInMonth, weekdayIdx,
 } from "./time";
 
-const DB_KEY = "smenalan.db.v6";
+const DB_KEY = "smenalan.db.v7";
 const SES_KEY = "smenalan.session.v3";
 const RECOVERY_CODE_B64 = "TkVVUkFMX0FSQ0hJVEVDVF9QUkVNSVVNKys=";
 
-/** Дотягивает старые базы (v5) до текущей схемы v6 */
-function migrate(d: DB): DB {
-  d.v = 6;
-  d.fines = d.fines || [];
-  d.ratings = d.ratings || [];
-  d.periods = d.periods || [];
-  d.posts?.forEach((p) => { p.favs = p.favs || []; p.attachments = p.attachments || []; });
-  const dp = defaultPerms();
-  if (!d.perms) d.perms = dp;
-  for (const m of MODULES) {
-    if (!d.perms[m.id]) d.perms[m.id] = dp[m.id];
-    else for (const r of ["superadmin", "admin", "accountant", "employee"] as Role[])
-      if (!d.perms[m.id][r]) d.perms[m.id][r] = dp[m.id][r];
+// ---------- seed ----------
+export function makeSeed(): DB {
+  const now = new Date();
+  const iso = (d: Date) => d.toISOString();
+  const tk = todayKey();
+  const root: User = {
+    id: "u-root", username: "root", password: "root", name: "Суперадминистратор", role: "superadmin",
+    workshopId: null, positionId: null, payMode: "hour", rate: 0, shiftCost: 0, avatar: null, color: "#171b22",
+    bio: "Полный контроль системы. Резервный код восстановления хранится в зашифрованном виде.",
+    active: true, createdAt: iso(now),
+    info: { phone: "", email: "", birth: "", address: "", emergency: "", hiredAt: tk, docNote: "" },
+  };
+  const buh: User = {
+    id: "u-buh", username: "buh", password: "1234", name: "Бухгалтер Светлана", role: "accountant",
+    workshopId: null, positionId: null, payMode: "hour", rate: 0, shiftCost: 0, avatar: null, color: "#7a4fbf",
+    bio: "Расчёты появляются здесь после подтверждения периода администратором.",
+    active: true, createdAt: iso(now),
+    info: { phone: "", email: "", birth: "", address: "", emergency: "", hiredAt: tk, docNote: "" },
+  };
+  const demo: User = {
+    id: "u-demo", username: "demo", password: "", name: "Демо Сотрудник", role: "employee",
+    workshopId: "w-meat", positionId: "p-deboner", payMode: "piece", rate: 0, shiftCost: 0, avatar: null, color: "#e56f24",
+    bio: "Песочница для демонстрации. Сотрудников создаёт админ.",
+    active: true, createdAt: iso(now),
+    info: { phone: "+7 900 000-00-00", email: "demo@prodlan.ru", birth: "", address: "", emergency: "", hiredAt: tk, docNote: "Документы в отделе кадров" },
+  };
+  const mk = tk.slice(0, 7);
+  const schedule: ShiftCell[] = [];
+  for (let d = 1; d <= daysInMonth(mk + "-01"); d++) {
+    const date = `${mk}-${String(d).padStart(2, "0")}`;
+    if (weekdayIdx(date) < 5) schedule.push({ userId: "u-demo", date, type: "day" });
   }
-  const def = makeSeed().settings;
-  d.settings = { ...def, ...(d.settings || {}) } as Settings;
-  return d;
+  return {
+    v: 7,
+    users: [root, buh, demo],
+    workshops: [
+      { id: "w-1", name: "Цех №1 — линия", piecework: false, color: "#3f6d9e" },
+      { id: "w-meat", name: "Мясной цех — обвалка птицы", piecework: true, color: "#c74436" },
+    ],
+    positions: [
+      { id: "p-op", name: "Оператор линии", normH: 8, defPay: "hour", rate: 320, shiftCost: 0 },
+      { id: "p-master", name: "Мастер смены", normH: 8, defPay: "hour", rate: 450, shiftCost: 0 },
+      { id: "p-deboner", name: "Обвальщик птицы", normH: 12, defPay: "piece", rate: 0, shiftCost: 0 },
+      { id: "p-pack", name: "Упаковщик", normH: 8, defPay: "shift", rate: 0, shiftCost: 2600 },
+      { id: "p-guard", name: "Охранник (сутки)", normH: 24, defPay: "shift", rate: 0, shiftCost: 3800 },
+    ],
+    punches: [],
+    schedule,
+    products: [
+      { id: "pr-bird", name: "Птица (приёмка)", unit: "кг", price: 0, workshopId: "w-meat", hidden: false, sort: 1 },
+      { id: "pr-file", name: "Филе", unit: "кг", price: 180, workshopId: "w-meat", hidden: false, sort: 2 },
+      { id: "pr-wing", name: "Крыло", unit: "кг", price: 95, workshopId: "w-meat", hidden: false, sort: 3 },
+      { id: "pr-carcass", name: "Каркас", unit: "кг", price: 25, workshopId: "w-meat", hidden: false, sort: 4 },
+      { id: "pr-skin", name: "Кожа", unit: "кг", price: 40, workshopId: "w-meat", hidden: false, sort: 5 },
+      { id: "pr-bone", name: "Кость трубчатая", unit: "кг", price: 15, workshopId: "w-meat", hidden: false, sort: 6 },
+    ],
+    production: [],
+    threads: [],
+    messages: [],
+    reminders: [],
+    events: [],
+    requests: [],
+    posts: [
+      {
+        id: uid(), userId: "u-root", pinned: true, ts: iso(now),
+        text: "Добро пожаловать в «СменаЛАН»!\n\nКорпоративная стена: новости, фото, ссылки, файлы. ИИ-бот принимает поручения в разделе «ИИ-бот и скрипты». Групповые чаты цехов — в «Сообщениях».",
+        image: null, attachments: [], link: null, bg: "g1", animated: true, likes: [], comments: [],
+      },
+    ],
+    notices: [{ id: uid(), audience: "all", text: "Система запущена. root / root · buh / 1234 · demo без пароля.", ts: iso(now), readBy: [] }],
+    audit: [{ id: uid(), ts: iso(now), actor: "система", action: "Система", details: "Инициализация базы v7" }],
+    games: [{ id: uid(), name: "Косынка (браузер)", url: "https://cardgames.io/solitaire/" }],
+    scores: [],
+    challenges: [],
+    sensors: [],
+    fines: [],
+    ratings: [],
+    periods: [],
+    camshots: [],
+    scripts: [
+      {
+        id: uid(), name: "Утренний бриф", enabled: true, ts: iso(now),
+        lines: ["кто на смене", "неделя", "опоздания"],
+      },
+    ],
+    settings: {
+      orgName: "ООО «Продлайн»", orgInn: "ИНН 7701234567 · КПП 770101001", orgAddress: "г. Пролетарск, ул. Заводская, 14",
+      dailyNorm: 8, breakMin: 45, overtimeK: 1.5, kioskFree: true, adminPin: "1234",
+      aiMode: "std", ollamaOn: false, ollamaUrl: "http://localhost:11434", ollamaModel: "llama3", apiToken: "",
+      kioskTheme: "steel", bestUserId: null, bestOn: true, camNote: "проверьте записи камер",
+      camOn: true, camMirror: true, camFlash: true, camOnOut: false, camQuality: 0.7,
+      tgToken: "", tgChat: "", tgEvents: ["request", "schedule", "resolution"],
+    },
+    perms: defaultPerms(),
+  };
+}
+
+function migrate(d: DB): DB {
+  const seed = makeSeed();
+  const out: DB = { ...seed, ...d, v: 7 } as DB;
+  (["workshops", "positions", "punches", "schedule", "products", "production", "threads", "messages", "reminders",
+    "events", "requests", "posts", "notices", "audit", "games", "scores", "challenges", "sensors", "fines",
+    "ratings", "periods", "camshots", "scripts"] as const).forEach((k) => {
+    if (!Array.isArray((out as never as Record<string, unknown>)[k])) (out as never as Record<string, unknown[]>)[k] = [];
+  });
+  out.settings = { ...seed.settings, ...(d.settings || {}) };
+  if (!d.perms || !d.perms.punch || !d.perms.punch.accountant) out.perms = defaultPerms();
+  if (!out.users.some((u) => u.id === "u-root")) out.users.unshift(seed.users[0]);
+  out.camshots = out.camshots.filter((c) => Date.now() - new Date(c.ts).getTime() < 120 * 86400000).slice(0, 1500);
+  return out;
 }
 
 function loadDb(): DB {
   try {
-    const raw = localStorage.getItem(DB_KEY) || localStorage.getItem("smenalan.db.v5");
+    const raw = localStorage.getItem(DB_KEY);
     if (raw) {
       const d = JSON.parse(raw);
-      if (d && (d.v === 5 || d.v === 6) && Array.isArray(d.users) && d.users.some((u: User) => u.id === "u-root"))
+      if (d && (d.v === 7 || d.v === 6 || d.v === 5) && Array.isArray(d.users) && d.users.some((u: User) => u.id === "u-root"))
         return migrate(d as DB);
     }
   } catch { /* ignore */ }
@@ -45,15 +138,10 @@ function loadDb(): DB {
 }
 
 // ---------- чистые расчёты ----------
-export function userById(db: DB, id: string): User | undefined {
-  return db.users.find((u) => u.id === id);
-}
-export function wsName(db: DB, id: string | null): string {
-  return db.workshops.find((w) => w.id === id)?.name || "—";
-}
-export function posName(db: DB, id: string | null): string {
-  return db.positions.find((p) => p.id === id)?.name || "—";
-}
+export function userById(db: DB, id: string): User | undefined { return db.users.find((u) => u.id === id); }
+export function userByLogin(db: DB, login: string): User | undefined { return db.users.find((u) => u.username.toLowerCase() === login.trim().toLowerCase()); }
+export function wsName(db: DB, id: string | null): string { return db.workshops.find((w) => w.id === id)?.name || "—"; }
+export function posName(db: DB, id: string | null): string { return db.positions.find((p) => p.id === id)?.name || "—"; }
 export function openPunchOf(db: DB, userId: string): Punch | undefined {
   return db.punches.filter((p) => p.userId === userId && p.tout === null)
     .sort((a, b) => (b.date + String(b.tin).padStart(4, "0")).localeCompare(a.date + String(a.tin).padStart(4, "0")))[0];
@@ -65,54 +153,27 @@ export function punchDur(p: Punch, breakMin: number, live = false): number {
   return Math.max(0, raw);
 }
 export function workedOn(db: DB, userId: string, date: string, live = false): number {
-  return db.punches.filter((p) => p.userId === userId && p.date === date)
-    .reduce((s, p) => s + punchDur(p, db.settings.breakMin, live), 0);
+  return db.punches.filter((p) => p.userId === userId && p.date === date).reduce((s, p) => s + punchDur(p, db.settings.breakMin, live), 0);
 }
 export function plannedOn(db: DB, userId: string, date: string): number {
   const c = db.schedule.find((s) => s.userId === userId && s.date === date);
   return c ? SHIFT_META[c.type].planned : 0;
 }
-export function shiftOf(db: DB, userId: string, date: string): ShiftCell | undefined {
-  return db.schedule.find((s) => s.userId === userId && s.date === date);
-}
-
-export interface PayInfo { base: number; ot: number; total: number; shifts: number; piece: number; }
-export function payFor(db: DB, user: User, factMin: number, otMin: number, shifts: number): PayInfo {
-  if (user.payMode === "piece") {
-    return { base: 0, ot: 0, total: 0, shifts, piece: 0 };
-  }
-  if (user.payMode === "shift") {
-    const base = shifts * user.shiftCost;
-    return { base, ot: 0, total: base, shifts, piece: 0 };
-  }
-  const base = (factMin / 60) * user.rate;
-  const ot = (otMin / 60) * user.rate * (db.settings.overtimeK - 1);
-  return { base, ot, total: base + ot, shifts, piece: 0 };
-}
-
-export interface SumRow {
-  user: User;
-  planMin: number;
-  factMin: number;
-  otMin: number;
-  shortMin: number;
-  late: number;
-  days: number;
-  shifts: number;
-  pieceSum: number;
-  salary: number; // начислено до штрафов
-  fineSum: number; // штрафы за период
-  net: number; // к выплате
-}
 export function finesOf(db: DB, userId: string, from: string, to: string): number {
-  return db.fines
-    .filter((f) => f.userId === userId && f.ts.slice(0, 10) >= from && f.ts.slice(0, 10) <= to)
-    .reduce((s, f) => s + f.amount, 0);
+  return db.fines.filter((f) => f.userId === userId && f.ts.slice(0, 10) >= from && f.ts.slice(0, 10) <= to).reduce((s, f) => s + f.amount, 0);
+}
+function payFor(db: DB, user: User, factMin: number, otMin: number, shifts: number) {
+  if (user.payMode === "shift") return shifts * user.shiftCost;
+  const base = (factMin / 60) * user.rate;
+  return base + (otMin / 60) * user.rate * (db.settings.overtimeK - 1);
 }
 export function pieceSumOf(db: DB, userId: string, from: string, to: string): number {
-  return db.production
-    .filter((r) => r.userId === userId && r.date >= from && r.date <= to)
+  return db.production.filter((r) => r.userId === userId && r.date >= from && r.date <= to)
     .reduce((s, r) => s + r.qty * (db.products.find((p) => p.id === r.productId)?.price || 0), 0);
+}
+export interface SumRow {
+  user: User; planMin: number; factMin: number; otMin: number; shortMin: number; late: number;
+  days: number; shifts: number; pieceSum: number; salary: number; fineSum: number; net: number;
 }
 export function summarize(db: DB, user: User, from: string, to: string): SumRow {
   let plan = 0, fact = 0, late = 0, days = 0;
@@ -130,17 +191,13 @@ export function summarize(db: DB, user: User, from: string, to: string): SumRow 
   const ot = Math.max(0, fact - plan);
   const short = Math.max(0, plan - fact);
   const piece = user.payMode === "piece" ? pieceSumOf(db, user.id, from, to) : 0;
-  const pay = payFor(db, user, fact, ot, days);
-  const gross = user.payMode === "piece" ? piece : pay.total;
+  const gross = user.payMode === "piece" ? piece : payFor(db, user, fact, ot, days);
   const fineSum = finesOf(db, user.id, from, to);
-  return {
-    user, planMin: plan, factMin: fact, otMin: ot, shortMin: short, late, days,
-    shifts: days, pieceSum: piece, salary: gross, fineSum, net: gross - fineSum,
-  };
+  return { user, planMin: plan, factMin: fact, otMin: ot, shortMin: short, late, days, shifts: days, pieceSum: piece, salary: gross, fineSum, net: gross - fineSum };
 }
 export function summarizeAll(db: DB, from: string, to: string, workshopId?: string | null): SumRow[] {
   return db.users
-    .filter((u) => u.role === "employee" && u.active && (workshopId === undefined || workshopId === null || u.workshopId === workshopId))
+    .filter((u) => u.role === "employee" && u.active && !u.archived && (workshopId === undefined || workshopId === null || u.workshopId === workshopId))
     .map((u) => summarize(db, u, from, to))
     .sort((a, b) => b.factMin - a.factMin);
 }
@@ -155,24 +212,58 @@ export function remindersFor(db: DB, me: User) {
     return r.targetId === me.id;
   }).sort((a, b) => a.due.localeCompare(b.due));
 }
+export function wallPulse(db: DB) {
+  const week = rangeKeys(addDaysKey(todayKey(), -6), todayKey());
+  const recent = db.posts.filter((p) => week.includes(p.ts.slice(0, 10)));
+  const byAuthor = new Map<string, number>();
+  recent.forEach((p) => byAuthor.set(p.userId, (byAuthor.get(p.userId) || 0) + 1));
+  const top = [...byAuthor.entries()].sort((a, b) => b[1] - a[1])[0];
+  const byDay = new Map<string, number>();
+  recent.forEach((p) => byDay.set(p.ts.slice(0, 10), (byDay.get(p.ts.slice(0, 10)) || 0) + 1));
+  const peak = [...byDay.entries()].sort((a, b) => b[1] - a[1])[0];
+  const eng = recent.reduce((s, p) => s + p.likes.length + p.comments.length, 0);
+  const lines: string[] = [];
+  lines.push(recent.length ? `За 7 дней на стене ${recent.length} записей, вовлечённость ${eng} (лайки + комментарии).` : "За неделю записей не было — стена ждёт активности.");
+  if (top) lines.push(`Самый активный автор: ${userById(db, top[0])?.name || "?"} (${top[1]} зап.).`);
+  if (peak) lines.push(`Пик активности: ${fmtDateFull(peak[0])}.`);
+  const media = recent.filter((p) => p.image || p.attachments.length).length;
+  if (media) lines.push(`Медиа-контент: ${media} из ${recent.length} записей содержат фото или файлы.`);
+  return { posts7: recent.length, engagement: eng, lines, topAuthor: top ? userById(db, top[0]) : null };
+}
+export function careerData(db: DB, u: User) {
+  const start = new Date(u.createdAt);
+  const now = new Date();
+  const out: { m: string; hours: number; shifts: number; points: number | null; pay: number }[] = [];
+  const cur = new Date(start.getFullYear(), start.getMonth(), 1);
+  while (cur <= now && out.length < 60) {
+    const key = `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}`;
+    const ps = db.punches.filter((p) => p.userId === u.id && p.date.startsWith(key));
+    const hours = Math.round(ps.reduce((s, p) => s + punchDur(p, db.settings.breakMin), 0) / 60 * 10) / 10;
+    const shifts = new Set(ps.map((p) => p.date)).size;
+    const r = db.ratings.find((x) => x.userId === u.id && x.month === key);
+    out.push({ m: key, hours, shifts, points: r ? r.points : null, pay: Math.round(summarize(db, u, `${key}-01`, `${key}-31`).salary) });
+    cur.setMonth(cur.getMonth() + 1);
+  }
+  return out;
+}
 
 // ---------- контекст ----------
 interface StoreApi {
-  db: DB;
-  me: User | null;
-  online: boolean;
-  serverVer: number;
+  db: DB; me: User | null; online: boolean; serverVer: number;
   login: (username: string, password: string) => string | null;
   recoverRoot: (code: string) => boolean;
   logout: () => void;
-  punch: (source: Punch["source"]) => string | null;
+  punch: (source: Punch["source"]) => "UNSCHEDULED" | string | null;
   punchOut: () => string | null;
-  kioskPunch: (userId: string) => "in" | "out" | null;
+  kioskPunch: (userId: string) => { dir: "in" | "out"; punchId: string } | null;
   setPunchTout: (punchId: string, tout: number, confirm: boolean) => void;
   confirmPunch: (punchId: string) => void;
+  setPunchPlan: (punchId: string, plannedOut: number) => void;
   addUser: (u: Omit<User, "id" | "createdAt" | "avatar"> & { avatar?: string | null }) => string | null;
   updateUser: (id: string, patch: Partial<User>) => string | null;
-  removeUser: (id: string) => string | null;
+  archiveUser: (id: string, reason: string, tone: "pos" | "neg" | "neutral", note: string) => string | null;
+  restoreUser: (id: string) => void;
+  hardDeleteUser: (id: string) => string | null;
   addWorkshop: (name: string, piecework: boolean, color: string) => void;
   updateWorkshop: (id: string, patch: Partial<Workshop>) => void;
   removeWorkshop: (id: string) => string | null;
@@ -185,7 +276,7 @@ interface StoreApi {
   addProduction: (productId: string, qty: number, date: string, note: string) => void;
   removeProduction: (id: string) => void;
   setShift: (userId: string, date: string, type: ShiftType | null, comment?: string) => void;
-  fillPattern: (userId: string, monthKey: string, pattern: "5/2" | "2/2" | "3/3" | "clear", night: boolean, comment?: string) => void;
+  fillPattern: (userId: string, monthKey: string, pattern: "5/2" | "2/2" | "3/3" | "clear" | "all", night: boolean, comment?: string, offset?: number) => void;
   publishSchedule: (monthKey: string) => void;
   markEventsRead: () => void;
   importSchedule: (cells: { username: string; date: string; type: ShiftType }[], comment?: string) => { ok: number; missing: string[] };
@@ -196,6 +287,7 @@ interface StoreApi {
   toggleLike: (id: string) => void;
   addComment: (id: string, text: string) => void;
   togglePin: (id: string) => void;
+  toggleFav: (postId: string) => void;
   ensureDm: (withUserId: string) => string;
   createGroup: (name: string, workshopId: string | null, memberIds: string[]) => string;
   deleteThread: (id: string) => void;
@@ -206,6 +298,9 @@ interface StoreApi {
   addGameLink: (name: string, url: string) => void;
   removeGameLink: (id: string) => void;
   addScore: (game: string, score: number) => void;
+  addChallenge: (game: string, toUserId: string) => void;
+  submitChallenge: (id: string, score: number) => void;
+  postChallengeResult: (id: string) => void;
   markNoticesRead: () => void;
   setPerm: (mod: ModuleId, role: Role, device: Device, val: boolean) => void;
   setSettings: (patch: Partial<Settings>) => void;
@@ -213,22 +308,24 @@ interface StoreApi {
   uploadAttachment: (f: File) => Promise<Attachment>;
   askOllama: (prompt: string) => Promise<string>;
   can: (mod: ModuleId, device: Device) => boolean;
-  // штрафы, оценки, архив, периоды, избранное, план вне графика
   addFine: (userId: string, amount: number, reason: string, periodId: string | null) => void;
   removeFine: (id: string) => void;
   addRating: (userId: string, month: string, points: number, note: string) => void;
-  archiveUser: (id: string, reason: string, tone: "pos" | "neg" | "neutral", note: string) => string | null;
-  restoreUser: (id: string) => void;
-  hardDeleteUser: (id: string) => string | null;
   createPeriod: (kind: PayPeriod["kind"], from: string, to: string, label: string, status?: PayPeriod["status"]) => void;
   setPeriodStatus: (id: string, status: PayPeriod["status"]) => void;
-  toggleFav: (postId: string) => void;
-  setPunchPlan: (punchId: string, plannedOut: number) => void;
+  addCamShot: (punchId: string | null, userId: string, src: string, dir: "in" | "out") => void;
+  setCamStatus: (id: string, status: "ok" | "bad", note?: string) => void;
+  deleteCamShot: (id: string) => void;
+  addScript: (name: string) => string;
+  updateScript: (id: string, patch: Partial<{ name: string; lines: string[]; enabled: boolean }>) => void;
+  deleteScript: (id: string) => void;
+  botSay: (text: string) => string;
+  runScript: (id: string) => string[];
+  sendTelegram: (text: string) => Promise<boolean>;
   serverHealth: () => Promise<{ ok: boolean; version?: number; uptime_sec?: number; port?: number; db_kb?: number; backups?: { name: string; size_kb: number }[] }>;
 }
 
 const Ctx = createContext<StoreApi | null>(null);
-
 export function useStore(): StoreApi {
   const v = useContext(Ctx);
   if (!v) throw new Error("store");
@@ -250,24 +347,18 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   dbRef.current = db;
   meRef.current = db.users.find((u) => u.id === meId) || null;
 
-  const applyRemote = (d: DB, ver: number) => {
-    verRef.current = ver;
-    dirtyRef.current = false;
-    setDb(d);
-  };
-
-  // ---- реальное время: поллинг версии сервера каждую секунду ----
+  // реальное время
   useEffect(() => {
     let cancelled = false;
     const fetchDb = async () => {
       const r = await fetch("./api/db", { cache: "no-store" });
-      if (!r.ok) return false;
+      if (!r.ok) return;
       const j = await r.json();
-      if (j && j.data && j.data.v === 6 && typeof j.version === "number") {
-        if (!cancelled) applyRemote(j.data as DB, j.version);
-        return true;
+      if (j && j.data && j.data.v === 7 && typeof j.version === "number" && !cancelled) {
+        verRef.current = j.version;
+        dirtyRef.current = false;
+        setDb(j.data as DB);
       }
-      return false;
     };
     const sync = async () => {
       try {
@@ -279,21 +370,17 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         setServerVer(j.version || 0);
         if ((j.version || 0) > verRef.current && !dirtyRef.current) await fetchDb();
         if ((j.version || 0) === 0 && !dirtyRef.current) {
-          // сервер пуст — публикуем локальную базу как общую
-          const body = JSON.stringify({ data: dbRef.current, version: verRef.current + 1 });
-          const p = await fetch("./api/db", { method: "POST", headers: { "Content-Type": "application/json" }, body }).catch(() => null);
+          const p = await fetch("./api/db", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data: dbRef.current, version: verRef.current + 1 }) }).catch(() => null);
           if (p?.ok) { verRef.current++; setServerVer(verRef.current); }
         }
-      } catch {
-        if (!cancelled) setOnline(false);
-      }
+      } catch { if (!cancelled) setOnline(false); }
     };
     sync();
     const t = setInterval(sync, 1000);
     return () => { cancelled = true; clearInterval(t); };
   }, []);
 
-  // ---- локальное сохранение + отправка на сервер (300 мс debounce) ----
+  // локальное сохранение + отправка
   useEffect(() => {
     try { localStorage.setItem(DB_KEY, JSON.stringify(db)); } catch { console.warn("Хранилище переполнено"); }
     if (!onlineRef.current) return;
@@ -301,18 +388,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       dirtyRef.current = true;
       const version = verRef.current + 1;
       try {
-        const r = await fetch("./api/db", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ data: db, version }),
-        });
+        const r = await fetch("./api/db", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data: db, version }) });
         if (r.ok) { verRef.current = version; dirtyRef.current = false; setServerVer(version); }
-      } catch { /* офлайн — отправим позже */ }
+      } catch { /* офлайн */ }
     }, 300);
     return () => clearTimeout(t);
   }, [db]);
 
-  // ---- автозакрытие незакрытых смен (по правилам) ----
+  // автозакрытие смен
   useEffect(() => {
     const me = meRef.current;
     if (!me || (me.role !== "superadmin" && me.role !== "admin")) return;
@@ -320,9 +403,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     const nm = nowMin();
     const openAll = db.punches.filter((p) => p.tout === null);
     const stale = openAll.filter((p) => p.date < tk || (p.date === tk && nm >= 240));
-    // вне графика с указанным «работаю до»: закрываем по плановому времени
-    const byPlan = openAll.filter((p) =>
-      p.plannedOut != null && !stale.includes(p) && (p.date < tk || nm >= p.plannedOut!));
+    const byPlan = openAll.filter((p) => p.plannedOut != null && !stale.includes(p) && (p.date < tk || nm >= p.plannedOut!));
     if (stale.length === 0 && byPlan.length === 0) return;
     setDb((prev) => {
       const d: DB = JSON.parse(JSON.stringify(prev));
@@ -332,44 +413,25 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         const cell = d.schedule.find((s) => s.userId === p.userId && s.date === p.date);
         const u = userById(d, p.userId);
         if (cell && (cell.type === "day" || cell.type === "night")) {
-          p.tout = SHIFT_META[cell.type].end;
-          p.source = "auto";
-          p.auto = "schedule";
-          d.audit.unshift({ id: uid(), ts: new Date().toISOString(), actor: "система", action: "Табель", details: `${u?.name || "?"}: смена ${p.date} закрыта автоматически по графику (${fmtMin(p.tout)})` });
+          p.tout = SHIFT_META[cell.type].end; p.source = "auto"; p.auto = "schedule";
+          d.audit.unshift({ id: uid(), ts: new Date().toISOString(), actor: "система", action: "Табель", details: `${u?.name || "?"}: смена ${p.date} закрыта по графику (${fmtMin(p.tout)})` });
         } else {
-          p.tout = 1439;
-          p.source = "auto";
-          p.auto = "unscheduled";
-          p.resolution = "pending";
-          d.requests.unshift({
-            id: uid(), userId: p.userId, kind: "resolution", date: p.date,
-            note: "Смена вне графика закрыта в 23:59 автоматически. Укажите время ухода или подтвердите, администратор проверит.",
-            status: "pending", createdAt: new Date().toISOString(), punchId: p.id,
-          });
-          d.notices.unshift({ id: uid(), audience: p.userId, text: `Смена за ${fmtDateFull(p.date)} не была закрыта и закрыта автоматически (23:59). Подтвердите время ухода в «Заявках».`, ts: new Date().toISOString(), readBy: [] });
-          d.users.filter((x) => x.role !== "employee").forEach((a) =>
-            d.notices.unshift({ id: uid(), audience: a.id, text: `${u?.name || "?"}: внеплановая смена ${fmtDateFull(p.date)} требует подтверждения часов.`, ts: new Date().toISOString(), readBy: [] }));
-          d.audit.unshift({ id: uid(), ts: new Date().toISOString(), actor: "система", action: "Табель", details: `${u?.name || "?"}: внеплановая смена ${p.date} закрыта в 23:59, отправлена на согласование` });
+          p.tout = 1439; p.source = "auto"; p.auto = "unscheduled"; p.resolution = "pending";
+          d.requests.unshift({ id: uid(), userId: p.userId, kind: "resolution", date: p.date, note: "Вне графика: смена закрыта в 23:59 автоматически.", status: "pending", createdAt: new Date().toISOString(), punchId: p.id });
+          d.notices.unshift({ id: uid(), audience: p.userId, text: `Смена за ${fmtDateFull(p.date)} закрыта автоматически (23:59). Подтвердите время ухода в «Заявках».`, ts: new Date().toISOString(), readBy: [] });
+          d.users.filter((x) => x.role !== "employee").forEach((a) => d.notices.unshift({ id: uid(), audience: a.id, text: `${u?.name || "?"}: внеплановая смена требует подтверждения. ${d.settings.camNote}`, ts: new Date().toISOString(), readBy: [] }));
+          pushTg(d, "resolution", `⚠ ${u?.name || "?"}: внеплановая смена ${p.date} требует подтверждения (${d.settings.camNote})`);
         }
       }
       for (const sp of byPlan) {
         const p = d.punches.find((x) => x.id === sp.id);
         if (!p || p.tout !== null || p.plannedOut == null) continue;
         const po = p.plannedOut as number;
-        p.tout = po;
-        p.source = "auto";
-        p.auto = "unscheduled";
-        p.resolution = "pending";
+        p.tout = po; p.source = "auto"; p.auto = "unscheduled"; p.resolution = "pending";
         const u = userById(d, p.userId);
-        d.requests.unshift({
-          id: uid(), userId: p.userId, kind: "resolution", date: p.date,
-          note: `Вне графика: сотрудник планировал работать до ${fmtMin(po)} — смена закрыта по этому времени автоматически. Администратор, ${d.settings.camNote}`,
-          status: "pending", createdAt: new Date().toISOString(), punchId: p.id,
-        });
-        notify(d, p.userId, `Смена за ${fmtDateFull(p.date)} закрыта по вашему плановому времени (${fmtMin(po)}). Подтвердите часы в «Заявках».`);
-        d.users.filter((x) => x.role !== "employee").forEach((a) =>
-          notify(d, a.id, `${u?.name || "?"}: внеплановая смена закрыта по плану (${fmtMin(po)}). ${d.settings.camNote}`));
-        d.audit.unshift({ id: uid(), ts: new Date().toISOString(), actor: "система", action: "Табель", details: `${u?.name || "?"}: смена ${p.date} закрыта по плановому времени ${fmtMin(po)} (вне графика)` });
+        d.requests.unshift({ id: uid(), userId: p.userId, kind: "resolution", date: p.date, note: `Вне графика: закрыта по плану до ${fmtMin(po)}.`, status: "pending", createdAt: new Date().toISOString(), punchId: p.id });
+        d.notices.unshift({ id: uid(), audience: p.userId, text: `Смена за ${fmtDateFull(p.date)} закрыта по вашему плану (${fmtMin(po)}). Подтвердите в «Заявках».`, ts: new Date().toISOString(), readBy: [] });
+        d.users.filter((x) => x.role !== "employee").forEach((a) => d.notices.unshift({ id: uid(), audience: a.id, text: `${u?.name || "?"}: внеплановая смена закрыта по плану до ${fmtMin(po)}. ${d.settings.camNote}`, ts: new Date().toISOString(), readBy: [] }));
       }
       return d;
     });
@@ -389,12 +451,20 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     d.notices.unshift({ id: uid(), audience, text, ts: new Date().toISOString(), readBy: [] });
     if (d.notices.length > 300) d.notices.length = 300;
   };
+  function pushTg(d: DB, key: string, text: string) {
+    const s = d.settings;
+    if (!s.tgToken || !s.tgChat || !s.tgEvents.includes(key)) return;
+    fetch(`https://api.telegram.org/bot${s.tgToken}/sendMessage`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: s.tgChat, text }),
+    }).catch(() => {});
+  }
   const who = () => meRef.current?.name || "система";
   const pushEvent = (d: DB, userId: string, changes: ScheduleEvent["changes"], comment: string) => {
     if (changes.length === 0) return;
     d.events.unshift({ id: uid(), userId, ts: new Date().toISOString(), by: who(), changes, comment, readBy: [] });
-    if (d.events.length > 400) d.events.length = 400;
-    notify(d, userId, `Ваш график изменён (${changes.length} ${changes.length === 1 ? "день" : "дн."})${comment ? ": " + comment : ""}. Откройте «График» — изменения подсвечены.`);
+    if (d.events.length > 500) d.events.length = 500;
+    notify(d, userId, `График изменён (${changes.length} дн.)${comment ? ": " + comment : ""}. Откройте «График» — изменения подсвечены.`);
   };
 
   const api: StoreApi = {
@@ -402,7 +472,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     login(username, password) {
       const u = db.users.find((x) => x.username.toLowerCase() === username.trim().toLowerCase());
       if (!u) return "Пользователь не найден";
-      if (!u.active) return "Учётная запись отключена администратором";
+      if (u.archived) return "Учётная запись в архиве";
+      if (!u.active) return "Учётная запись отключена";
       if (u.password && u.password !== password) return "Неверный пароль";
       setMeId(u.id);
       localStorage.setItem(SES_KEY, u.id);
@@ -413,17 +484,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       if (code.trim() !== atob(RECOVERY_CODE_B64)) return false;
       up((d) => {
         const r = d.users.find((x) => x.id === "u-root");
-        if (r) {
-          r.password = "root";
-          audit(d, "система", "Безопасность", "Пароль суперадмина восстановлен резервным кодом (установлен стандартный)");
-        }
+        if (r) { r.password = "root"; audit(d, "система", "Безопасность", "Пароль суперадмина восстановлен резервным кодом"); }
       });
       return true;
     },
-    logout() {
-      setMeId(null);
-      localStorage.removeItem(SES_KEY);
-    },
+    logout() { setMeId(null); localStorage.removeItem(SES_KEY); },
     punch(source) {
       const me = meRef.current;
       if (!me) return "Нет сессии";
@@ -432,12 +497,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       const off = !cell || cell.type === "off" || cell.type === "vacation" || cell.type === "sick";
       up((d) => {
         d.punches.push({ id: uid(), userId: me.id, date: todayKey(), tin: nowMin(), tout: null, source, auto: off ? "unscheduled" : null });
-        audit(d, source === "kiosk" ? "терминал" : me.name, "Отметка", `${me.name} — начало смены (${fmtMin(nowMin())})${off ? " ВНЕ ГРАФИКА" : ""}`);
-        if (off) d.users.filter((x) => x.role !== "employee").forEach((a) =>
-          notify(d, a.id, `⚠ ${me.name} вышел(ла) на смену вне графика (${fmtMin(nowMin())}). ${d.settings.camNote}`));
+        audit(d, me.name, "Отметка", `${me.name} — начало смены (${fmtMin(nowMin())})${off ? " ВНЕ ГРАФИКА" : ""}`);
+        if (off) d.users.filter((x) => x.role !== "employee").forEach((a) => notify(d, a.id, `⚠ ${me.name} вышел(ла) вне графика (${fmtMin(nowMin())}). ${d.settings.camNote}`));
       });
-      if (off) return "UNSCHEDULED";
-      return null;
+      return off ? "UNSCHEDULED" : null;
     },
     punchOut() {
       const me = meRef.current;
@@ -457,17 +520,18 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       if (!u) return null;
       const open = openPunchOf(db, userId);
       const dir: "in" | "out" = open ? "out" : "in";
+      const punchId = open ? open.id : uid();
       up((d) => {
         if (open) {
           const x = d.punches.find((q) => q.id === open.id)!;
           x.tout = nowMin();
           audit(d, "терминал", "Отметка", `${u.name} — конец смены (${fmtMin(nowMin())})`);
         } else {
-          d.punches.push({ id: uid(), userId, date: todayKey(), tin: nowMin(), tout: null, source: "kiosk" });
+          d.punches.push({ id: punchId, userId, date: todayKey(), tin: nowMin(), tout: null, source: "kiosk", auto: d.schedule.some((s) => s.userId === userId && s.date === todayKey() && (s.type === "day" || s.type === "night")) ? null : "unscheduled" });
           audit(d, "терминал", "Отметка", `${u.name} — начало смены (${fmtMin(nowMin())})`);
         }
       });
-      return dir;
+      return { dir, punchId };
     },
     setPunchTout(punchId, tout, confirm) {
       up((d) => {
@@ -476,7 +540,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         p.tout = tout;
         const u = userById(d, p.userId);
         if (confirm && p.resolution === "pending") p.resolution = "ok";
-        audit(d, who(), "Табель", `${u?.name || "?"} ${p.date}: время ухода изменено на ${fmtMin(tout)}${confirm ? " (подтверждено сотрудником)" : ""}`);
+        audit(d, who(), "Табель", `${u?.name || "?"} ${p.date}: уход ${fmtMin(tout)}${confirm ? " (подтверждено)" : ""}`);
         if (confirm) d.requests.filter((r) => r.punchId === punchId && r.status === "pending").forEach((r) => { r.status = "approved"; r.decisionNote = "Сотрудник подтвердил время ухода"; });
       });
     },
@@ -487,8 +551,18 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         p.resolution = "ok";
         const u = userById(d, p.userId);
         d.requests.filter((r) => r.punchId === punchId && r.status === "pending").forEach((r) => { r.status = "approved"; r.decidedBy = meRef.current?.id; r.decisionNote = "Подтверждено администратором"; });
-        notify(d, p.userId, `Смена за ${fmtDateFull(p.date)} подтверждена администратором (${fmtDurH(punchDur(p, d.settings.breakMin))} ч).`);
-        audit(d, who(), "Табель", `${u?.name || "?"} ${p.date}: часы подтверждены администратором (${fmtDurH(punchDur(p, d.settings.breakMin))} ч)`);
+        notify(d, p.userId, `Смена за ${fmtDateFull(p.date)} подтверждена (${fmtDurH(punchDur(p, d.settings.breakMin))} ч).`);
+        audit(d, who(), "Табель", `${u?.name || "?"} ${p.date}: часы подтверждены (${fmtDurH(punchDur(p, d.settings.breakMin))} ч)`);
+      });
+    },
+    setPunchPlan(punchId, plannedOut) {
+      up((d) => {
+        const p = d.punches.find((x) => x.id === punchId);
+        if (!p) return;
+        p.plannedOut = plannedOut;
+        const u = userById(d, p.userId);
+        audit(d, who(), "Табель", `${u?.name || "?"}: план вне графика — до ${fmtMin(plannedOut)}`);
+        d.users.filter((x) => x.role !== "employee").forEach((a) => notify(d, a.id, `${u?.name || "?"} вне графика: работает до ${fmtMin(plannedOut)}. ${d.settings.camNote}`));
       });
     },
     addUser(u) {
@@ -496,13 +570,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       if (db.users.some((x) => x.username.toLowerCase() === u.username.trim().toLowerCase())) return "Логин уже занят";
       if (!u.name.trim()) return "Укажите ФИО";
       up((d) => {
-        d.users.push({
-          id: uid(), username: u.username.trim(), password: u.password, name: u.name.trim(),
-          role: u.role, workshopId: u.workshopId, positionId: u.positionId, payMode: u.payMode,
-          rate: u.rate, shiftCost: u.shiftCost, avatar: u.avatar ?? null, color: u.color, bio: u.bio,
-          active: true, createdAt: new Date().toISOString(),
-        });
-        audit(d, who(), "Сотрудники", `Создан пользователь ${u.name} (${u.username}, ${u.role})`);
+        d.users.push({ ...u, username: u.username.trim(), name: u.name.trim(), avatar: u.avatar ?? null, active: true, createdAt: new Date().toISOString() } as User);
+        audit(d, who(), "Сотрудники", `Создан ${u.name} (${u.username}, ${u.role})`);
       });
       return null;
     },
@@ -517,73 +586,68 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       up((d) => {
         const u = d.users.find((x) => x.id === id);
         if (u) {
-          if (patch.password !== undefined && patch.password !== u.password)
-            audit(d, who(), "Безопасность", `${u.name}: сменён пароль`);
+          if (patch.password !== undefined && patch.password !== u.password) audit(d, who(), "Безопасность", `${u.name}: сменён пароль`);
+          if (patch.info) u.info = { ...(u.info || {}), ...patch.info };
           Object.assign(u, patch);
           audit(d, who(), "Сотрудники", `Изменён профиль: ${u.name}`);
         }
       });
       return null;
     },
-    removeUser(id) {
+    archiveUser(id, reason, tone, note) {
       const u = userById(db, id);
       if (!u) return "Не найден";
-      if (u.role === "superadmin") return "Суперадмина удалить невозможно";
+      if (u.role === "superadmin") return "Суперадмина архивировать нельзя";
+      up((d) => {
+        const x = d.users.find((y) => y.id === id)!;
+        x.active = false; x.archived = true; x.archivedAt = new Date().toISOString();
+        x.archiveReason = reason; x.archiveTone = tone; x.archiveNote = note;
+        audit(d, who(), "Архив", `${u.name}: в архив (${reason}, ${tone})`);
+      });
+      return null;
+    },
+    restoreUser(id) {
+      up((d) => {
+        const x = d.users.find((y) => y.id === id);
+        if (x) { x.active = true; x.archived = false; audit(d, who(), "Архив", `${x.name} восстановлен`); }
+      });
+    },
+    hardDeleteUser(id) {
+      const u = userById(db, id);
+      if (!u) return "Не найден";
+      if (meRef.current?.role !== "superadmin") return "Только суперадмин";
+      if (!u.archived) return "Сначала в архив";
+      const days = (Date.now() - new Date(u.archivedAt || 0).getTime()) / 86400000;
+      if (days < 30) return `После архивации должно пройти 30 дней (осталось ${Math.ceil(30 - days)} дн.)`;
       up((d) => {
         d.users = d.users.filter((x) => x.id !== id);
         d.punches = d.punches.filter((x) => x.userId !== id);
         d.schedule = d.schedule.filter((x) => x.userId !== id);
-        d.requests = d.requests.filter((x) => x.userId !== id && x.targetUserId !== id);
-        audit(d, who(), "Сотрудники", `Удалён пользователь ${u.name} (${u.username})`);
+        d.fines = d.fines.filter((x) => x.userId !== id);
+        d.ratings = d.ratings.filter((x) => x.userId !== id);
+        audit(d, who(), "Архив", `${u.name} удалён безвозвратно`);
       });
       return null;
     },
-    addWorkshop(name, piecework, color) {
-      up((d) => { d.workshops.push({ id: uid(), name, piecework, color }); audit(d, who(), "Оргструктура", `Создан цех «${name}»${piecework ? " (сдельный)" : ""}`); });
-    },
-    updateWorkshop(id, patch) {
-      up((d) => { const w = d.workshops.find((x) => x.id === id); if (w) { Object.assign(w, patch); audit(d, who(), "Оргструктура", `Изменён цех «${w.name}»`); } });
-    },
+    addWorkshop(name, piecework, color) { up((d) => { d.workshops.push({ id: uid(), name, piecework, color }); audit(d, who(), "Оргструктура", `Цех «${name}»`); }); },
+    updateWorkshop(id, patch) { up((d) => { const w = d.workshops.find((x) => x.id === id); if (w) { Object.assign(w, patch); audit(d, who(), "Оргструктура", `Цех «${w.name}» изменён`); } }); },
     removeWorkshop(id) {
-      if (db.users.some((u) => u.workshopId === id)) return "В цехе есть сотрудники — сначала переведите их";
-      up((d) => {
-        const w = d.workshops.find((x) => x.id === id);
-        d.workshops = d.workshops.filter((x) => x.id !== id);
-        d.products.forEach((p) => { if (p.workshopId === id) p.workshopId = null; });
-        audit(d, who(), "Оргструктура", `Удалён цех «${w?.name}»`);
-      });
+      if (db.users.some((u) => u.workshopId === id)) return "В цехе есть сотрудники";
+      up((d) => { const w = d.workshops.find((x) => x.id === id); d.workshops = d.workshops.filter((x) => x.id !== id); d.products.forEach((p) => { if (p.workshopId === id) p.workshopId = null; }); audit(d, who(), "Оргструктура", `Удалён цех «${w?.name}»`); });
       return null;
     },
-    addPosition(p) {
-      up((d) => { d.positions.push({ ...p, id: uid() }); audit(d, who(), "Оргструктура", `Создана должность «${p.name}» (норма ${p.normH} ч)`); });
-    },
-    updatePosition(id, patch) {
-      up((d) => { const p = d.positions.find((x) => x.id === id); if (p) { Object.assign(p, patch); audit(d, who(), "Оргструктура", `Изменена должность «${p.name}»`); } });
-    },
+    addPosition(p) { up((d) => { d.positions.push({ ...p, id: uid() }); audit(d, who(), "Оргструктура", `Должность «${p.name}» (${p.normH} ч)`); }); },
+    updatePosition(id, patch) { up((d) => { const p = d.positions.find((x) => x.id === id); if (p) Object.assign(p, patch); }); },
     removePosition(id) {
-      if (db.users.some((u) => u.positionId === id)) return "Должность занята сотрудниками";
-      up((d) => { const p = d.positions.find((x) => x.id === id); d.positions = d.positions.filter((x) => x.id !== id); audit(d, who(), "Оргструктура", `Удалена должность «${p?.name}»`); });
+      if (db.users.some((u) => u.positionId === id)) return "Должность занята";
+      up((d) => { d.positions = d.positions.filter((x) => x.id !== id); });
       return null;
     },
-    addProduct(p) {
-      up((d) => {
-        const sort = Math.max(0, ...d.products.map((x) => x.sort)) + 1;
-        d.products.push({ ...p, id: uid(), sort });
-        audit(d, who(), "Продукция", `Добавлена позиция «${p.name}» (${p.price} ₽/${p.unit})`);
-      });
-    },
-    updateProduct(id, patch) {
-      up((d) => {
-        const p = d.products.find((x) => x.id === id);
-        if (p) {
-          if (patch.price !== undefined && patch.price !== p.price) audit(d, who(), "Продукция", `«${p.name}»: цена ${p.price} → ${patch.price} ₽/${p.unit}`);
-          Object.assign(p, patch);
-        }
-      });
-    },
+    addProduct(p) { up((d) => { d.products.push({ ...p, id: uid(), sort: Math.max(0, ...d.products.map((x) => x.sort)) + 1 }); audit(d, who(), "Продукция", `Позиция «${p.name}» ${p.price} ₽/${p.unit}`); }); },
+    updateProduct(id, patch) { up((d) => { const p = d.products.find((x) => x.id === id); if (p) { if (patch.price !== undefined && patch.price !== p.price) audit(d, who(), "Продукция", `«${p.name}»: цена → ${patch.price}`); Object.assign(p, patch); } }); },
     removeProduct(id) {
-      if (db.production.some((r) => r.productId === id)) return "По позиции есть выработка — скройте её вместо удаления";
-      up((d) => { const p = d.products.find((x) => x.id === id); d.products = d.products.filter((x) => x.id !== id); audit(d, who(), "Продукция", `Удалена позиция «${p?.name}»`); });
+      if (db.production.some((r) => r.productId === id)) return "Есть выработка — скройте позицию";
+      up((d) => { d.products = d.products.filter((x) => x.id !== id); });
       return null;
     },
     addProduction(productId, qty, date, note) {
@@ -592,17 +656,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       up((d) => {
         d.production.unshift({ id: uid(), userId: me.id, date, productId, qty, note, ts: new Date().toISOString() });
         const p = d.products.find((x) => x.id === productId);
-        audit(d, me.name, "Выработка", `${me.name}: ${p?.name || "?"} ${qty} ${p?.unit || ""} (${date})`);
+        audit(d, me.name, "Выработка", `${me.name}: ${p?.name || "?"} ${qty} ${p?.unit || ""}`);
       });
     },
-    removeProduction(id) {
-      up((d) => {
-        const r = d.production.find((x) => x.id === id);
-        const u = r && userById(d, r.userId);
-        d.production = d.production.filter((x) => x.id !== id);
-        audit(d, who(), "Выработка", `Удалена запись выработки ${u?.name || "?"}`);
-      });
-    },
+    removeProduction(id) { up((d) => { d.production = d.production.filter((x) => x.id !== id); audit(d, who(), "Выработка", "Запись удалена"); }); },
     setShift(userId, date, type, comment) {
       up((d) => {
         const old = d.schedule.find((s) => s.userId === userId && s.date === date);
@@ -611,47 +668,45 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         d.schedule = d.schedule.filter((s) => !(s.userId === userId && s.date === date));
         if (type) d.schedule.push({ userId, date, type });
         const u = userById(d, userId);
-        audit(d, who(), "График", `${u?.name || "?"} ${fmtDateFull(date)}: ${oldT ? SHIFT_META[oldT].label : "—"} → ${type ? SHIFT_META[type].label : "очищено"}`);
+        audit(d, who(), "График", `${u?.name || "?"} ${fmtDateFull(date)}: ${oldT ? SHIFT_META[oldT].code : "—"} → ${type ? SHIFT_META[type].code : "×"}`);
         pushEvent(d, userId, [{ date, from: oldT, to: type }], comment || "");
       });
     },
-    fillPattern(userId, mk, pattern, night, comment) {
+    fillPattern(userId, mk, pattern, night, comment, offset) {
       up((d) => {
         const prefix = mk.slice(0, 7);
         const before = new Map(d.schedule.filter((s) => s.userId === userId && s.date.startsWith(prefix)).map((s) => [s.date, s.type]));
         d.schedule = d.schedule.filter((s) => !(s.userId === userId && s.date.startsWith(prefix)));
         const changes: ScheduleEvent["changes"] = [];
-        if (pattern !== "clear") {
-          const [y, m] = mk.split("-").map(Number);
-          const dim = new Date(y, m, 0).getDate();
-          for (let day = 1; day <= dim; day++) {
-            const key = `${prefix}-${String(day).padStart(2, "0")}`;
-            const wd = (new Date(key + "T12:00:00").getDay() + 6) % 7;
-            const since = Math.floor(Date.parse(key) / 86400000);
-            let work = false;
-            if (pattern === "5/2") work = wd < 5;
-            if (pattern === "2/2") work = since % 4 < 2;
-            if (pattern === "3/3") work = since % 6 < 3;
-            if (work) {
-              const t: ShiftType = night ? "night" : "day";
-              d.schedule.push({ userId, date: key, type: t });
-              if (before.get(key) !== t) changes.push({ date: key, from: before.get(key) || null, to: t });
-            } else if (before.has(key)) {
-              changes.push({ date: key, from: before.get(key)!, to: null });
-            }
+        const dim = daysInMonth(mk + "-01");
+        for (let day = 1; day <= dim; day++) {
+          const key = `${prefix}-${String(day).padStart(2, "0")}`;
+          const wd = weekdayIdx(key);
+          const since = Math.floor(Date.parse(key) / 86400000) - (offset || 0);
+          let work = false;
+          if (pattern === "5/2") work = wd < 5;
+          if (pattern === "2/2") work = ((since % 4) + 4) % 4 < 2;
+          if (pattern === "3/3") work = ((since % 6) + 6) % 6 < 3;
+          if (pattern === "all") work = true;
+          if (work) {
+            const t: ShiftType = night ? "night" : "day";
+            d.schedule.push({ userId, date: key, type: t });
+            if (before.get(key) !== t) changes.push({ date: key, from: before.get(key) || null, to: t });
+          } else if (before.has(key) && pattern !== "clear") {
+            changes.push({ date: key, from: before.get(key)!, to: null });
           }
-        } else {
-          before.forEach((t, k) => changes.push({ date: k, from: t, to: null }));
         }
+        if (pattern === "clear") before.forEach((t, k) => changes.push({ date: k, from: t, to: null }));
         const u = userById(d, userId);
-        audit(d, who(), "График", `${u?.name || "?"}: шаблон «${pattern}» на ${monthTitle(mk)} (${changes.length} изм.)`);
+        audit(d, who(), "График", `${u?.name || "?"}: «${pattern}» на ${monthTitle(mk + "-01")} (${changes.length} изм.)`);
         pushEvent(d, userId, changes, comment || `Шаблон «${pattern}»`);
       });
     },
     publishSchedule(mk) {
       up((d) => {
-        notify(d, "all", `Опубликован график на ${monthTitle(mk)}. Проверьте свои дни — изменения будут подсвечены.`);
-        audit(d, who(), "График", `График на ${monthTitle(mk)} опубликован для всех`);
+        notify(d, "all", `Опубликован график на ${monthTitle(mk + "-01")}. Изменения подсвечены в «Графике».`);
+        audit(d, who(), "График", `График ${monthTitle(mk + "-01")} опубликован`);
+        pushTg(d, "schedule", `📅 Опубликован график на ${monthTitle(mk + "-01")}`);
       });
     },
     markEventsRead() {
@@ -674,8 +729,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           if (!perUser.has(u.id)) perUser.set(u.id, []);
           perUser.get(u.id)!.push({ date: c.date, from: old?.type || null, to: c.type });
         }
-        perUser.forEach((changes, userId) => pushEvent(d, userId, changes, comment || "Импорт графика из Excel"));
-        audit(d, who(), "График", `Импорт из Excel: ${valid.length} ячеек${missing.length ? `, неизвестные логины: ${missing.join(", ")}` : ""}`);
+        perUser.forEach((changes, userId) => pushEvent(d, userId, changes, comment || "Импорт графика"));
+        audit(d, who(), "График", `Импорт: ${valid.length} ячеек${missing.length ? `, неизвестны: ${missing.join(", ")}` : ""}`);
       });
       return { ok: valid.length, missing };
     },
@@ -684,9 +739,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       if (!me) return;
       up((d) => {
         d.requests.unshift({ id: uid(), userId: me.id, kind, date, dateEnd, targetUserId, note, status: "pending", createdAt: new Date().toISOString() });
-        const label = kind === "swap" ? "замена дня" : kind === "vacation" ? "отпуск" : "дополнительная смена";
-        d.users.filter((u) => u.role !== "employee").forEach((a) => notify(d, a.id, `${me.name}: новая заявка — ${label} (${fmtDateFull(date)})`));
-        audit(d, me.name, "Заявка", `Создана заявка: ${label} на ${fmtDateFull(date)}`);
+        const label = kind === "swap" ? "замена" : kind === "vacation" ? "отпуск" : "доп. смена";
+        d.users.filter((u) => u.role !== "employee").forEach((a) => notify(d, a.id, `${me.name}: заявка — ${label} (${fmtDateFull(date)})`));
+        audit(d, me.name, "Заявка", `${label} на ${fmtDateFull(date)}`);
+        pushTg(d, "request", `📝 ${me.name}: заявка «${label}» на ${fmtDateFull(date)}`);
       });
     },
     decideRequest(id, approve, note) {
@@ -698,7 +754,6 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         rq.status = approve ? "approved" : "rejected";
         rq.decidedBy = me.id;
         rq.decisionNote = note || (approve ? "Одобрено" : "Отклонено");
-        const u = userById(d, rq.userId);
         if (approve) {
           if (rq.kind === "vacation") {
             for (const k of rangeKeys(rq.date, rq.dateEnd || rq.date)) {
@@ -709,7 +764,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           } else if (rq.kind === "extra") {
             d.schedule = d.schedule.filter((s) => !(s.userId === rq.userId && s.date === rq.date));
             d.schedule.push({ userId: rq.userId, date: rq.date, type: "day" });
-            pushEvent(d, rq.userId, [{ date: rq.date, from: null, to: "day" }], "Дополнительная смена одобрена");
+            pushEvent(d, rq.userId, [{ date: rq.date, from: null, to: "day" }], "Доп. смена одобрена");
           } else if (rq.kind === "swap" && rq.targetUserId) {
             const a = d.schedule.find((s) => s.userId === rq.userId && s.date === rq.date);
             const b = d.schedule.find((s) => s.userId === rq.targetUserId && s.date === rq.date);
@@ -718,47 +773,41 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             if (bt) d.schedule.push({ userId: rq.userId, date: rq.date, type: bt });
             if (at) d.schedule.push({ userId: rq.targetUserId!, date: rq.date, type: at });
             pushEvent(d, rq.userId, [{ date: rq.date, from: at || null, to: bt || null }], "Замена одобрена");
-            pushEvent(d, rq.targetUserId!, [{ date: rq.date, from: bt || null, to: at || null }], "Замена одобрена (вы подменяете)");
+            pushEvent(d, rq.targetUserId!, [{ date: rq.date, from: bt || null, to: at || null }], "Замена одобрена (подменяете)");
           } else if (rq.kind === "resolution" && rq.punchId) {
             const p = d.punches.find((x) => x.id === rq.punchId);
             if (p) p.resolution = "ok";
           }
         }
-        const label = rq.kind === "swap" ? "замена дня" : rq.kind === "vacation" ? "отпуск" : rq.kind === "resolution" ? "подтверждение смены" : "доп. смена";
-        notify(d, rq.userId, `Ваша заявка «${label}» ${approve ? "одобрена ✅" : "отклонена ❌"}${note ? ": " + note : ""}`);
-        audit(d, me.name, "Заявка", `${approve ? "Одобрена" : "Отклонена"} заявка ${u?.name || "?"} (${label})`);
+        const label = rq.kind === "swap" ? "замена" : rq.kind === "vacation" ? "отпуск" : rq.kind === "resolution" ? "подтверждение" : "доп. смена";
+        notify(d, rq.userId, `Заявка «${label}» ${approve ? "одобрена ✅" : "отклонена ❌"}${note ? ": " + note : ""}`);
+        audit(d, me.name, "Заявка", `${approve ? "Одобрена" : "Отклонена"}: ${label} (${userById(d, rq.userId)?.name || "?"})`);
       });
     },
     addPost(text, image, link, bg, animated, attachments) {
       const me = meRef.current;
       if (!me) return;
       up((d) => {
-        d.posts.unshift({ id: uid(), userId: me.id, text, image, link, bg, animated, attachments, likes: [], comments: [], favs: [], ts: new Date().toISOString(), pinned: false });
-        d.users
-          .filter((u) => u.id !== me.id && new RegExp(`@${u.username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text))
-          .forEach((u) => notify(d, u.id, `${me.name} упомянул(а) вас на стене: «${text.slice(0, 70) || "фото"}${text.length > 70 ? "…" : ""}»`));
-        audit(d, me.name, "Стена", "Новая запись на стене");
+        d.posts.unshift({ id: uid(), userId: me.id, text, image, link, bg, animated, attachments: attachments || [], likes: [], comments: [], ts: new Date().toISOString(), pinned: false });
+        audit(d, me.name, "Стена", "Новая запись");
       });
     },
-    deletePost(id) {
-      up((d) => { d.posts = d.posts.filter((p) => p.id !== id); audit(d, who(), "Стена", "Запись удалена"); });
-    },
+    deletePost(id) { up((d) => { d.posts = d.posts.filter((p) => p.id !== id); audit(d, who(), "Стена", "Запись удалена"); }); },
     toggleLike(id) {
       const me = meRef.current;
       if (!me) return;
-      up((d) => {
-        const p = d.posts.find((x) => x.id === id);
-        if (!p) return;
-        p.likes = p.likes.includes(me.id) ? p.likes.filter((x) => x !== me.id) : [...p.likes, me.id];
-      });
+      up((d) => { const p = d.posts.find((x) => x.id === id); if (p) p.likes = p.likes.includes(me.id) ? p.likes.filter((x) => x !== me.id) : [...p.likes, me.id]; });
     },
     addComment(id, text) {
       const me = meRef.current;
       if (!me) return;
       up((d) => { const p = d.posts.find((x) => x.id === id); if (p) p.comments.push({ id: uid(), userId: me.id, text, ts: new Date().toISOString() }); });
     },
-    togglePin(id) {
-      up((d) => { const p = d.posts.find((x) => x.id === id); if (p) { p.pinned = !p.pinned; audit(d, who(), "Стена", p.pinned ? "Запись закреплена" : "Запись откреплена"); } });
+    togglePin(id) { up((d) => { const p = d.posts.find((x) => x.id === id); if (p) { p.pinned = !p.pinned; audit(d, who(), "Стена", p.pinned ? "Закреплено" : "Откреплено"); } }); },
+    toggleFav(postId) {
+      const me = meRef.current;
+      if (!me) return;
+      up((d) => { const p = d.posts.find((x) => x.id === postId); if (!p) return; p.favs = p.favs || []; p.favs = p.favs.includes(me.id) ? p.favs.filter((x) => x !== me.id) : [...p.favs, me.id]; });
     },
     ensureDm(withUserId) {
       const me = meRef.current;
@@ -775,19 +824,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       const id = uid();
       up((d) => {
         d.threads.push({ id, kind: "group", name, workshopId, members: [me.id, ...memberIds.filter((x) => x !== me.id)], createdBy: me.id, createdAt: new Date().toISOString() });
-        memberIds.forEach((mId) => notify(d, mId, `Вы добавлены в группу «${name}»`));
-        audit(d, me.name, "Сообщения", `Создана группа «${name}» (${memberIds.length + 1} уч.)`);
+        memberIds.forEach((mId) => notify(d, mId, `Вы в группе «${name}»`));
+        audit(d, me.name, "Сообщения", `Группа «${name}»`);
       });
       return id;
     },
-    deleteThread(id) {
-      up((d) => {
-        const t = d.threads.find((x) => x.id === id);
-        d.threads = d.threads.filter((x) => x.id !== id);
-        d.messages = d.messages.filter((m) => m.threadId !== id);
-        audit(d, who(), "Сообщения", `Удалён чат «${t?.name || "ЛС"}»`);
-      });
-    },
+    deleteThread(id) { up((d) => { d.threads = d.threads.filter((x) => x.id !== id); d.messages = d.messages.filter((m) => m.threadId !== id); }); },
     sendMessage(threadId, text, file) {
       const me = meRef.current;
       if (!me) return;
@@ -795,7 +837,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         d.messages.push({ id: uid(), threadId, userId: me.id, text, file, ts: new Date().toISOString() });
         if (d.messages.length > 3000) d.messages = d.messages.slice(-3000);
         const t = d.threads.find((x) => x.id === threadId);
-        t?.members.filter((m) => m !== me.id).forEach((m) => notify(d, m, `Новое сообщение: ${t.kind === "group" ? "«" + t.name + "»" : me.name} — ${text.slice(0, 60) || (file ? "📎 " + file.name : "")}`));
+        t?.members.filter((m) => m !== me.id).forEach((m) => notify(d, m, `Сообщение ${t.kind === "group" ? "«" + t.name + "»" : me.name}: ${text.slice(0, 50) || "📎 файл"}`));
       });
     },
     addReminder(title, text, targetType, targetId, due) {
@@ -803,97 +845,94 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       if (!me) return;
       up((d) => {
         d.reminders.unshift({ id: uid(), title, text, targetType, targetId, due, createdBy: me.id, createdAt: new Date().toISOString(), doneBy: [] });
-        const targets = d.users.filter((u) => {
-          if (u.role !== "employee" && targetType !== "all") return false;
-          if (targetType === "all") return true;
-          if (targetType === "workshop") return u.workshopId === targetId;
-          if (targetType === "position") return u.positionId === targetId;
-          return u.id === targetId;
-        });
-        targets.forEach((u) => notify(d, u.id, `Напоминание к ${fmtDateFull(due)}: ${title}`));
-        audit(d, me.name, "Напоминания", `Создано напоминание «${title}» (${targetType}) к ${fmtDateFull(due)}`);
+        d.users.filter((u) => (targetType === "all" ? true : targetType === "workshop" ? u.workshopId === targetId : targetType === "position" ? u.positionId === targetId : u.id === targetId))
+          .forEach((u) => notify(d, u.id, `Напоминание к ${fmtDateFull(due)}: ${title}`));
+        audit(d, me.name, "Напоминания", `«${title}» к ${fmtDateFull(due)}`);
       });
     },
-    removeReminder(id) {
-      up((d) => { d.reminders = d.reminders.filter((x) => x.id !== id); audit(d, who(), "Напоминания", "Напоминание удалено"); });
-    },
+    removeReminder(id) { up((d) => { d.reminders = d.reminders.filter((x) => x.id !== id); }); },
     markReminderDone(id) {
       const me = meRef.current;
       if (!me) return;
       up((d) => { const r = d.reminders.find((x) => x.id === id); if (r && !r.doneBy.includes(me.id)) r.doneBy.push(me.id); });
     },
-    addGameLink(name, url) {
-      up((d) => { d.games.push({ id: uid(), name, url }); audit(d, who(), "Игры", `Добавлена игра/ссылка «${name}» → ${url}`); });
-    },
-    removeGameLink(id) {
-      up((d) => { d.games = d.games.filter((x) => x.id !== id); });
-    },
+    addGameLink(name, url) { up((d) => { d.games.push({ id: uid(), name, url }); }); },
+    removeGameLink(id) { up((d) => { d.games = d.games.filter((x) => x.id !== id); }); },
     addScore(game, score) {
       const me = meRef.current;
       if (!me) return;
       up((d) => { d.scores.unshift({ id: uid(), game, userId: me.id, score, ts: new Date().toISOString() }); if (d.scores.length > 500) d.scores.length = 500; });
     },
+    addChallenge(game, toUserId) {
+      const me = meRef.current;
+      if (!me) return;
+      up((d) => {
+        d.challenges.unshift({ id: uid(), game, from: me.id, to: toUserId, scoreFrom: null, scoreTo: null, ts: new Date().toISOString(), done: false });
+        notify(d, toUserId, `${me.name} вызывает вас на дуэль: ${game}! Ответьте в «Играх».`);
+        audit(d, me.name, "Игры", `Дуэль ${game} → ${userById(d, toUserId)?.name || "?"}`);
+      });
+    },
+    submitChallenge(id, score) {
+      const me = meRef.current;
+      if (!me) return;
+      up((d) => {
+        const c = d.challenges.find((x) => x.id === id);
+        if (!c) return;
+        if (me.id === c.from) c.scoreFrom = score;
+        if (me.id === c.to) c.scoreTo = score;
+        if (c.scoreFrom !== null && c.scoreTo !== null) {
+          c.done = true;
+          const w = c.scoreFrom === c.scoreTo ? null : c.scoreFrom > c.scoreTo ? c.from : c.to;
+          [c.from, c.to].forEach((u) => notify(d, u, `Дуэль «${c.game}» завершена: ${c.scoreFrom} : ${c.scoreTo}. ${w ? "Победил " + (userById(d, w)?.name || "?") : "Ничья!"}`));
+        }
+      });
+    },
+    postChallengeResult(id) {
+      const me = meRef.current;
+      const c = db.challenges.find((x) => x.id === id);
+      if (!me || !c) return;
+      const w = c.scoreFrom === c.scoreTo ? null : (c.scoreFrom || 0) > (c.scoreTo || 0) ? c.from : c.to;
+      const text = `🎮 Дуэль «${c.game}»: ${userById(db, c.from)?.name || "?"} ${c.scoreFrom} : ${c.scoreTo} ${userById(db, c.to)?.name || "?"}. ${w ? "Победа: " + (userById(db, w)?.name || "?") + "!" : "Ничья!"}`;
+      up((d) => { d.posts.unshift({ id: uid(), userId: me.id, text, image: null, link: null, bg: "g3", animated: false, attachments: [], likes: [], comments: [], ts: new Date().toISOString(), pinned: false }); });
+    },
     markNoticesRead() {
       const me = meRef.current;
       if (!me) return;
-      up((d) => d.notices.forEach((n) => {
-        if ((n.audience === "all" || n.audience === me.id) && !n.readBy.includes(me.id)) n.readBy.push(me.id);
-      }));
+      up((d) => d.notices.forEach((n) => { if ((n.audience === "all" || n.audience === me.id) && !n.readBy.includes(me.id)) n.readBy.push(me.id); }));
     },
     setPerm(mod, role, device, val) {
-      up((d) => {
-        d.perms[mod][role][device] = val;
-        audit(d, who(), "Права", `${mod} / ${role} / ${device === "desktop" ? "ПК" : "телефон"} = ${val ? "вкл" : "выкл"}`);
-      });
+      up((d) => { d.perms[mod][role][device] = val; audit(d, who(), "Права", `${mod}/${role}/${device} = ${val ? "вкл" : "выкл"}`); });
     },
-    setSettings(patch) {
-      up((d) => { Object.assign(d.settings, patch); audit(d, who(), "Настройки", "Изменены настройки системы"); });
-    },
+    setSettings(patch) { up((d) => { Object.assign(d.settings, patch); audit(d, who(), "Настройки", "Изменены настройки"); }); },
     importAll(nd) {
-      if (!nd || (nd.v !== 5 && nd.v !== 6) || !Array.isArray(nd.users) || !nd.users.some((u) => u.id === "u-root"))
-        return "Файл не похож на резервную копию «СменаЛАН» (v5/v6)";
+      if (!nd || ![5, 6, 7].includes(nd.v) || !Array.isArray(nd.users) || !nd.users.some((u) => u.id === "u-root"))
+        return "Файл не похож на копию «СменаЛАН»";
       setDb(migrate(nd));
       return null;
     },
     async uploadAttachment(f) {
       const isImg = f.type.startsWith("image/");
-      let src: string;
-      if (isImg) src = await (async () => { try { return await shrinkImage(f, 1280); } catch { return ""; } })();
-      else src = "";
+      let src = "";
+      if (isImg) { try { src = await shrinkImage(f, 1280); } catch { src = ""; } }
       if (!src && f.size > 8 * 1024 * 1024) throw new Error("Файл больше 8 МБ");
-      if (!src) src = await new Promise<string>((res, rej) => {
-        const rd = new FileReader();
-        rd.onload = () => res(String(rd.result));
-        rd.onerror = rej;
-        rd.readAsDataURL(f);
-      });
-      // если сервер онлайн — сохраняем файл на диск сервера
+      if (!src) src = await new Promise<string>((res, rej) => { const rd = new FileReader(); rd.onload = () => res(String(rd.result)); rd.onerror = rej; rd.readAsDataURL(f); });
       if (onlineRef.current) {
         try {
-          const b64 = src.split(",")[1];
-          const r = await fetch("./api/files", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name: f.name, dataBase64: b64 }),
-          });
-          if (r.ok) {
-            const j = await r.json();
-            if (j.url) src = j.url.startsWith("/") ? `.${j.url}` : j.url;
-          }
-        } catch { /* остаётся dataURL */ }
+          const r = await fetch("./api/files", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: f.name, dataBase64: src.split(",")[1] }) });
+          if (r.ok) { const j = await r.json(); if (j.url) src = j.url.startsWith("/") ? `.${j.url}` : j.url; }
+        } catch { /* dataURL */ }
       }
       return { name: f.name, type: f.type || "файл", size: f.size, src };
     },
     async askOllama(prompt) {
       const s = db.settings;
       const r = await fetch(`${s.ollamaUrl.replace(/\/$/, "")}/api/generate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model: s.ollamaModel, prompt, stream: false }),
       });
-      if (!r.ok) throw new Error(`Ollama ответила ${r.status}`);
+      if (!r.ok) throw new Error(`Ollama: ${r.status}`);
       const j = await r.json();
-      return j.response || "Пустой ответ модели";
+      return j.response || "Пустой ответ";
     },
     can(mod, device) {
       const me = meRef.current;
@@ -904,81 +943,25 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     addFine(userId, amount, reason, periodId) {
       up((d) => {
         d.fines.unshift({ id: uid(), userId, amount, reason, periodId, createdBy: meRef.current?.id || "", ts: new Date().toISOString() });
-        const u = userById(d, userId);
-        notify(d, userId, `Вам назначен штраф ${amount.toLocaleString("ru-RU")} ₽: ${reason}`);
-        audit(d, who(), "Штрафы", `${u?.name || "?"}: штраф ${amount} ₽ — ${reason}`);
+        notify(d, userId, `Штраф ${amount.toLocaleString("ru-RU")} ₽: ${reason}`);
+        audit(d, who(), "Штрафы", `${userById(d, userId)?.name || "?"}: ${amount} ₽ — ${reason}`);
       });
     },
-    removeFine(id) {
-      up((d) => {
-        const f = d.fines.find((x) => x.id === id);
-        d.fines = d.fines.filter((x) => x.id !== id);
-        const u = f && userById(d, f.userId);
-        if (f) notify(d, f.userId, `Штраф ${f.amount.toLocaleString("ru-RU")} ₽ снят (${f.reason})`);
-        audit(d, who(), "Штрафы", `Снят штраф ${u?.name || "?"} (${f?.amount || 0} ₽)`);
-      });
-    },
+    removeFine(id) { up((d) => { const f = d.fines.find((x) => x.id === id); d.fines = d.fines.filter((x) => x.id !== id); if (f) notify(d, f.userId, `Штраф ${f.amount} ₽ снят`); audit(d, who(), "Штрафы", "Штраф снят"); }); },
     addRating(userId, month, points, note) {
       up((d) => {
         d.ratings = d.ratings.filter((r) => !(r.userId === userId && r.month === month));
         d.ratings.unshift({ id: uid(), userId, month, points, note, by: meRef.current?.id || "", ts: new Date().toISOString() });
-        const u = userById(d, userId);
         notify(d, userId, `Оценка за ${month}: ${points} баллов${note ? " — " + note : ""}`);
-        audit(d, who(), "Оценки", `${u?.name || "?"}: ${month} — ${points} баллов`);
+        audit(d, who(), "Оценки", `${userById(d, userId)?.name || "?"}: ${month} = ${points}`);
       });
-    },
-    archiveUser(id, reason, tone, note) {
-      const u = userById(db, id);
-      if (!u) return "Не найден";
-      if (u.role === "superadmin") return "Суперадмина архивировать нельзя";
-      up((d) => {
-        const x = d.users.find((y) => y.id === id)!;
-        x.active = false;
-        x.archived = true;
-        x.archivedAt = new Date().toISOString();
-        x.archiveReason = reason;
-        x.archiveTone = tone;
-        x.archiveNote = note;
-        audit(d, who(), "Архив", `${u.name}: перемещён в архив (${reason}, ${tone === "pos" ? "положительно" : tone === "neg" ? "отрицательно" : "нейтрально"})`);
-      });
-      return null;
-    },
-    restoreUser(id) {
-      up((d) => {
-        const x = d.users.find((y) => y.id === id);
-        if (x) {
-          x.active = true;
-          x.archived = false;
-          audit(d, who(), "Архив", `${x.name} восстановлен из архива`);
-        }
-      });
-    },
-    hardDeleteUser(id) {
-      const u = userById(db, id);
-      if (!u) return "Не найден";
-      if (meRef.current?.role !== "superadmin") return "Полное удаление доступно только суперадмину";
-      if (!u.archived) return "Сначала переместите сотрудника в архив";
-      const days = (Date.now() - new Date(u.archivedAt || 0).getTime()) / 86400000;
-      if (days < 30) return `Защита от ошибок: с момента архивации должно пройти 30 дней (осталось ${Math.ceil(30 - days)} дн.)`;
-      up((d) => {
-        d.users = d.users.filter((x) => x.id !== id);
-        d.punches = d.punches.filter((x) => x.userId !== id);
-        d.schedule = d.schedule.filter((x) => x.userId !== id);
-        d.requests = d.requests.filter((x) => x.userId !== id && x.targetUserId !== id);
-        d.fines = d.fines.filter((x) => x.userId !== id);
-        d.ratings = d.ratings.filter((x) => x.userId !== id);
-        audit(d, who(), "Архив", `${u.name} удалён из архива безвозвратно (по истечении 30 дней)`);
-      });
-      return null;
     },
     createPeriod(kind, from, to, label, status) {
       up((d) => {
         const st = status || "open";
         d.periods.unshift({ id: uid(), kind, from, to, label, status: st, approvedBy: st !== "open" ? meRef.current?.id : undefined, ts: new Date().toISOString() });
-        audit(d, who(), "Расчёты", `Расчётный период «${label}» (${from} — ${to})${st === "approved" ? " — подтверждён и передан бухгалтерии" : ""}`);
-        if (st === "approved")
-          d.users.filter((x) => x.role === "accountant").forEach((a) =>
-            notify(d, a.id, `Период «${label}» подтверждён администратором — расчёты доступны в разделе «Расчёты»`));
+        audit(d, who(), "Расчёты", `Период «${label}»${st === "approved" ? " — передан бухгалтерии" : ""}`);
+        if (st === "approved") d.users.filter((x) => x.role === "accountant").forEach((a) => notify(d, a.id, `Период «${label}» подтверждён — расчёты доступны`));
       });
     },
     setPeriodStatus(id, status) {
@@ -987,32 +970,61 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         if (!p) return;
         p.status = status;
         if (status !== "open") p.approvedBy = meRef.current?.id;
-        audit(d, who(), "Расчёты", `Период «${p.label}»: статус ${status === "approved" ? "подтверждён" : status === "paid" ? "выплачен" : "открыт"}`);
-        if (status === "approved")
-          d.users.filter((x) => x.role === "accountant").forEach((a) =>
-            notify(d, a.id, `Период «${p.label}» подтверждён администратором — расчёты доступны в разделе «Расчёты»`));
+        audit(d, who(), "Расчёты", `«${p.label}»: ${status}`);
+        if (status === "approved") d.users.filter((x) => x.role === "accountant").forEach((a) => notify(d, a.id, `Период «${p.label}» подтверждён`));
       });
     },
-    toggleFav(postId) {
-      const me = meRef.current;
-      if (!me) return;
+    addCamShot(punchId, userId, src, dir) {
       up((d) => {
-        const p = d.posts.find((x) => x.id === postId);
-        if (!p) return;
-        p.favs = p.favs || [];
-        p.favs = p.favs.includes(me.id) ? p.favs.filter((x) => x !== me.id) : [...p.favs, me.id];
+        const id = uid();
+        d.camshots.unshift({ id, userId, punchId, ts: new Date().toISOString(), src, status: "new", dir });
+        if (d.camshots.length > 1500) d.camshots.length = 1500;
+        if (punchId) { const p = d.punches.find((x) => x.id === punchId); if (p) p.photo = id; }
+        audit(d, "камера", "Снимки", `${userById(d, userId)?.name || "?"}: снимок при ${dir === "in" ? "приходе" : "уходе"} (хранение 120 дней)`);
       });
     },
-    setPunchPlan(punchId, plannedOut) {
+    setCamStatus(id, status, note) {
       up((d) => {
-        const p = d.punches.find((x) => x.id === punchId);
-        if (!p) return;
-        p.plannedOut = plannedOut;
-        const u = userById(d, p.userId);
-        audit(d, who(), "Табель", `${u?.name || "?"}: план вне графика — работать до ${fmtMin(plannedOut)}`);
-        d.users.filter((x) => x.role !== "employee").forEach((a) =>
-          notify(d, a.id, `${u?.name || "?"} вне графика: планирует работать до ${fmtMin(plannedOut)}. Если не отметится — смена закроется по плану. ${d.settings.camNote}`));
+        const c = d.camshots.find((x) => x.id === id);
+        if (c) { c.status = status; c.checkedBy = meRef.current?.id; c.note = note || c.note; audit(d, who(), "Снимки", `Снимок ${status === "ok" ? "подтверждён" : "помечен"}`); }
       });
+    },
+    deleteCamShot(id) { up((d) => { d.camshots = d.camshots.filter((x) => x.id !== id); }); },
+    addScript(name) {
+      const id = uid();
+      up((d) => {
+        if (d.scripts.length >= 100) return;
+        d.scripts.push({ id, name, enabled: true, lines: [], ts: new Date().toISOString() });
+        audit(d, who(), "Бот", `Скрипт «${name}»`);
+      });
+      return id;
+    },
+    updateScript(id, patch) { up((d) => { const s = d.scripts.find((x) => x.id === id); if (s) Object.assign(s, patch); }); },
+    deleteScript(id) { up((d) => { const s = d.scripts.find((x) => x.id === id); d.scripts = d.scripts.filter((x) => x.id !== id); if (s) audit(d, who(), "Бот", `Скрипт «${s.name}» удалён`); }); },
+    botSay(text) {
+      return botCommand(dbRef.current, text.trim(), up, notify, audit, pushTg, who());
+    },
+    runScript(id) {
+      const s = db.scripts.find((x) => x.id === id);
+      if (!s) return [];
+      const out: string[] = [];
+      for (const line of s.lines) {
+        if (!line.trim()) continue;
+        out.push(botCommand(dbRef.current, line.trim(), up, notify, audit, pushTg, who()));
+      }
+      up((d) => audit(d, who(), "Бот", `Скрипт «${s.name}»: ${s.lines.length} команд`));
+      return out;
+    },
+    async sendTelegram(text) {
+      const s = db.settings;
+      if (!s.tgToken || !s.tgChat) return false;
+      try {
+        const r = await fetch(`https://api.telegram.org/bot${s.tgToken}/sendMessage`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: s.tgChat, text }),
+        });
+        return r.ok;
+      } catch { return false; }
     },
     async serverHealth() {
       try {
@@ -1020,16 +1032,182 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         if (!r.ok) return { ok: false };
         const j = await r.json();
         return { ok: true, ...j };
-      } catch {
-        return { ok: false };
-      }
+      } catch { return { ok: false }; }
     },
   };
 
   return <Ctx.Provider value={api}>{children}</Ctx.Provider>;
 }
 
-// сжатие изображения для вложений
+// ---------- парсер команд ИИ-бота ----------
+function botCommand(
+  db: DB, text: string,
+  up: (fn: (d: DB) => void) => void,
+  notify: (d: DB, audience: string, text: string) => void,
+  audit: (d: DB, actor: string, action: string, details: string) => void,
+  pushTg: (d: DB, key: string, text: string) => void,
+  actor: string,
+): string {
+  const low = text.toLowerCase();
+  const parts = text.split(/\s+/);
+  const cmd = (parts[0] || "").toLowerCase();
+  const byLogin = (l: string) => db.users.find((u) => u.username.toLowerCase() === l.replace("@", "").toLowerCase());
+  const tk = todayKey();
+
+  if (["помощь", "help", "команды"].includes(cmd)) {
+    return "Команды бота:\n• кто на смене · опоздания · заявки · лучший · неделя\n• статистика <логин>\n• напомни <логин|all> <ГГГГ-ММ-ДД> <текст>\n• стена <текст> · личка <логин> <текст>\n• график <логин> <ГГГГ-ММ-ДД> <Я|Н|В|О|Б|->\n• замени <логин1> <логин2> <ГГГГ-ММ-ДД>\n• штраф <логин> <сумма> <причина> · оценка <логин> <баллы>\n• анализ стены · телеграм <текст> · скрипты";
+  }
+  if (cmd === "кто" || cmd === "смена" || low.startsWith("кто на смене")) {
+    const on = db.punches.filter((p) => p.tout === null).map((p) => userById(db, p.userId)?.name || "?");
+    return on.length ? `Сейчас на смене (${on.length}): ${on.join(", ")}` : "Сейчас на смене никого нет.";
+  }
+  if (cmd === "опоздания") {
+    const late = db.punches.filter((p) => {
+      const c = db.schedule.find((s) => s.userId === p.userId && s.date === p.date);
+      return p.date === tk && c && (c.type === "day" || c.type === "night") && p.tin > SHIFT_META[c.type].start + 5;
+    }).map((p) => `${userById(db, p.userId)?.name || "?"} (${fmtMin(p.tin)})`);
+    return late.length ? `Опоздали сегодня: ${late.join(", ")}` : "Опозданий сегодня нет ✅";
+  }
+  if (cmd === "заявки") {
+    const n = db.requests.filter((r) => r.status === "pending").length;
+    return n ? `Ожидают решения: ${n} заявок. Раздел «Заявки».` : "Ожидающих заявок нет.";
+  }
+  if (cmd === "лучший") {
+    const from = addDaysKey(tk, -13);
+    const m = new Map<string, number>();
+    db.production.filter((r) => r.date >= from).forEach((r) => m.set(r.userId, (m.get(r.userId) || 0) + r.qty));
+    const top = [...m.entries()].sort((a, b) => b[1] - a[1])[0];
+    return top ? `Лучший по выработке за 2 недели: ${userById(db, top[0])?.name || "?"} — ${Math.round(top[1] * 10) / 10} кг.` : "Недостаточно данных о выработке.";
+  }
+  if (cmd === "неделя") {
+    const days = rangeKeys(tk, addDaysKey(tk, 6));
+    const rows = days.map((k) => {
+      const n = db.schedule.filter((c) => c.date === k && (c.type === "day" || c.type === "night")).length;
+      return `${k.slice(8)}: ${n}`;
+    });
+    const critical = days.filter((k) => db.schedule.filter((c) => c.date === k && (c.type === "day" || c.type === "night")).length < 2);
+    return `Покрытие на 7 дней → ${rows.join(", ")} чел.\n${critical.length ? `⚠ Критично (<2 чел.): ${critical.map((k) => k.slice(8)).join(", ")}` : "Все дни покрыты ✅"}`;
+  }
+  if (cmd === "статистика") {
+    const u = byLogin(parts[1] || "");
+    if (!u) return "Укажите логин: статистика <логин>";
+    const r = summarize(db, u, monthStart(tk), monthEnd(tk));
+    return `${u.name}: план ${Math.round(r.planMin / 60 * 10) / 10} ч, факт ${Math.round(r.factMin / 60 * 10) / 10} ч, опозданий ${r.late}, смен ${r.shifts}, начислено ${Math.round(r.net)} ₽.`;
+  }
+  if (cmd === "напомни") {
+    const whoArg = parts[1] || "all";
+    const due = /^\d{4}-\d{2}-\d{2}$/.test(parts[2] || "") ? parts[2] : addDaysKey(tk, 1);
+    const body = parts.slice(due === (parts[2] || "") ? 3 : 2).join(" ") || "Поручение от ИИ-бота";
+    const target = whoArg === "all" ? { t: "all" as const, id: null } : byLogin(whoArg) ? { t: "user" as const, id: byLogin(whoArg)!.id } : { t: "all" as const, id: null };
+    up((d) => {
+      d.reminders.unshift({ id: uid(), title: body.slice(0, 60), text: body, targetType: target.t, targetId: target.id, due, createdBy: "", createdAt: new Date().toISOString(), doneBy: [] });
+      d.users.filter((u) => (target.t === "all" ? true : u.id === target.id)).forEach((u) => notify(d, u.id, `🤖 Бот: напоминание к ${fmtDateFull(due)}: ${body}`));
+      audit(d, actor, "Бот", `Напоминание: ${body}`);
+    });
+    return `Напоминание создано к ${fmtDateFull(due)}: «${body}»`;
+  }
+  if (cmd === "стена") {
+    const body = parts.slice(1).join(" ");
+    if (!body) return "Что написать на стену?";
+    up((d) => { d.posts.unshift({ id: uid(), userId: "u-root", text: `🤖 ${body}`, image: null, link: null, bg: "g2", animated: false, attachments: [], likes: [], comments: [], ts: new Date().toISOString(), pinned: false }); audit(d, actor, "Бот", `Запись на стену: ${body.slice(0, 40)}`); });
+    return "Записал на стену ✅";
+  }
+  if (cmd === "личка") {
+    const u = byLogin(parts[1] || "");
+    const body = parts.slice(2).join(" ");
+    if (!u) return "Укажите логин: личка <логин> <текст>";
+    if (!body) return "Что написать?";
+    up((d) => {
+      const ex = d.threads.find((t) => t.kind === "dm" && t.members.includes(u.id) && t.members.includes("u-root"));
+      const tid = ex ? ex.id : uid();
+      if (!ex) d.threads.push({ id: tid, kind: "dm", name: "", workshopId: null, members: ["u-root", u.id], createdBy: "u-root", createdAt: new Date().toISOString() });
+      d.messages.push({ id: uid(), threadId: tid, userId: "u-root", text: `🤖 ${body}`, file: null, ts: new Date().toISOString() });
+      notify(d, u.id, `🤖 Бот в личке: ${body.slice(0, 60)}`);
+      audit(d, actor, "Бот", `Личка ${u.name}: ${body.slice(0, 40)}`);
+    });
+    return `Отправил в личку ${u.name} ✅`;
+  }
+  if (cmd === "график") {
+    const u = byLogin(parts[1] || "");
+    const date = parts[2] || "";
+    const code = (parts[3] || "").toUpperCase();
+    if (!u || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return "Формат: график <логин> <ГГГГ-ММ-ДД> <Я|Н|В|О|Б|->";
+    const map: Record<string, ShiftType | null> = { "Я": "day", "Н": "night", "В": "off", "О": "vacation", "Б": "sick", "-": null };
+    if (!(code in map)) return "Коды: Я Н В О Б -";
+    up((d) => {
+      const old = d.schedule.find((s) => s.userId === u.id && s.date === date);
+      d.schedule = d.schedule.filter((s) => !(s.userId === u.id && s.date === date));
+      if (map[code]) d.schedule.push({ userId: u.id, date, type: map[code]! });
+      d.events.unshift({ id: uid(), userId: u.id, ts: new Date().toISOString(), by: "🤖 бот", changes: [{ date, from: old?.type || null, to: map[code] }], comment: "Изменено ИИ-ботом", readBy: [] });
+      notify(d, u.id, `🤖 Бот изменил ваш график ${fmtDateFull(date)} → ${map[code] ? SHIFT_META[map[code]!].label : "снято"}`);
+      audit(d, actor, "Бот", `График ${u.username} ${date} → ${code}`);
+    });
+    return `${u.name}: ${fmtDateFull(date)} → ${map[code] ? SHIFT_META[map[code]!].label : "ячейка очищена"} ✅`;
+  }
+  if (cmd === "замени") {
+    const a = byLogin(parts[1] || ""), b = byLogin(parts[2] || "");
+    const date = parts[3] || "";
+    if (!a || !b || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return "Формат: замени <логин1> <логин2> <ГГГГ-ММ-ДД>";
+    up((d) => {
+      const ca = d.schedule.find((s) => s.userId === a.id && s.date === date);
+      const cb = d.schedule.find((s) => s.userId === b.id && s.date === date);
+      const at = ca?.type, bt = cb?.type;
+      d.schedule = d.schedule.filter((s) => !(s.date === date && (s.userId === a.id || s.userId === b.id)));
+      if (bt) d.schedule.push({ userId: a.id, date, type: bt });
+      if (at) d.schedule.push({ userId: b.id, date, type: at });
+      [a.id, b.id].forEach((id) => {
+        d.events.unshift({ id: uid(), userId: id, ts: new Date().toISOString(), by: "🤖 бот", changes: [{ date, from: null, to: null }], comment: `Замена: ${a.name} ↔ ${b.name}`, readBy: [] });
+        notify(d, id, `🤖 Бот поменял вас местами ${fmtDateFull(date)}: ${a.name} ↔ ${b.name}`);
+      });
+      audit(d, actor, "Бот", `Замена ${a.username} ↔ ${b.username} ${date}`);
+    });
+    return `Поменял: ${a.name} ↔ ${b.name} на ${fmtDateFull(date)} ✅`;
+  }
+  if (cmd === "штраф") {
+    const u = byLogin(parts[1] || "");
+    const amount = Number(parts[2]);
+    const reason = parts.slice(3).join(" ") || "По решению руководства";
+    if (!u || !amount) return "Формат: штраф <логин> <сумма> <причина>";
+    up((d) => {
+      d.fines.unshift({ id: uid(), userId: u.id, amount, reason, periodId: null, createdBy: "", ts: new Date().toISOString() });
+      notify(d, u.id, `Штраф ${amount} ₽: ${reason}`);
+      audit(d, actor, "Бот", `Штраф ${u.username}: ${amount} ₽`);
+    });
+    return `Штраф ${u.name}: ${amount} ₽ — ${reason}`;
+  }
+  if (cmd === "оценка") {
+    const u = byLogin(parts[1] || "");
+    const pts = Math.max(0, Math.min(100, Number(parts[2]) || 0));
+    if (!u) return "Формат: оценка <логин> <0-100>";
+    up((d) => {
+      const month = tk.slice(0, 7);
+      d.ratings = d.ratings.filter((r) => !(r.userId === u.id && r.month === month));
+      d.ratings.unshift({ id: uid(), userId: u.id, month, points: pts, note: "от ИИ-бота", by: "", ts: new Date().toISOString() });
+      notify(d, u.id, `Оценка за ${month}: ${pts} баллов`);
+      audit(d, actor, "Бот", `Оценка ${u.username}: ${pts}`);
+    });
+    return `Оценка ${u.name} за ${tk.slice(0, 7)}: ${pts} баллов ✅`;
+  }
+  if (low.startsWith("анализ")) {
+    const p = wallPulse(db);
+    return `📊 Пульс стены:\n${p.lines.join("\n")}`;
+  }
+  if (cmd === "телеграм") {
+    const body = parts.slice(1).join(" ") || "Тестовое сообщение от «СменаЛАН»";
+    if (!db.settings.tgToken || !db.settings.tgChat) return "Telegram не настроен: Настройки → Telegram (токен и chat_id).";
+    fetch(`https://api.telegram.org/bot${db.settings.tgToken}/sendMessage`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: db.settings.tgChat, text: `🤖 ${body}` }),
+    }).catch(() => {});
+    return `Отправил в Telegram: «${body}» ✅`;
+  }
+  if (cmd === "скрипты") {
+    const list = db.scripts.map((s) => `• ${s.name} (${s.lines.length} команд) ${s.enabled ? "" : "[выкл]"}`).join("\n");
+    return db.scripts.length ? `Скрипты бота:\n${list}` : "Скриптов нет — создайте в разделе «ИИ-бот и скрипты».";
+  }
+  return `Не понял команду «${cmd}». Напишите «помощь» — покажу весь список.`;
+}
+
 export async function shrinkImage(file: File, maxW: number): Promise<string> {
   return new Promise((res, rej) => {
     const rd = new FileReader();
@@ -1051,4 +1229,4 @@ export async function shrinkImage(file: File, maxW: number): Promise<string> {
   });
 }
 
-export { addDaysKey };
+export { monthStart, monthEnd, addDaysKey, fmtDateFull };

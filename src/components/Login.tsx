@@ -24,7 +24,7 @@ export default function Login({ onKiosk }: { onKiosk: () => void }) {
     { label: "buh · бухгалтерия", u: "buh", p: "1234" },
     { label: "demo · песочница (без пароля)", u: "demo", p: "" },
   ];
-  const emps = db.users.filter((x) => x.role === "employee" && x.active && !x.password).slice(0, 4);
+  const emps = db.users.filter((x) => x.role === "employee" && x.active && !x.archived && !x.password).slice(0, 3);
 
   const go = (username: string, password: string) => {
     const r = login(username, password);
@@ -54,9 +54,8 @@ export default function Login({ onKiosk }: { onKiosk: () => void }) {
                   <Avatar u={user} size={32} />
                   <div className="min-w-0 flex-1">
                     <b className="text-[13px] block truncate">{user?.name}</b>
-                    <span className="text-[10.5px] text-steel-400 font-bold uppercase">на смене</span>
+                    <span className="text-[10.5px] text-steel-400 font-bold uppercase">на смене · с {fmtMin(x.tin)}</span>
                   </div>
-                  <span className="font-mono tnum font-bold text-steel-200 text-[12px]">с {fmtMin(x.tin)}</span>
                   <span className="w-2 h-2 rounded-full bg-ok pulse-ok" />
                 </div>
               );
@@ -72,7 +71,7 @@ export default function Login({ onKiosk }: { onKiosk: () => void }) {
       <div className="bg-paper p-6 sm:p-10 flex items-center">
         <div className="w-full max-w-md mx-auto">
           <h1 className="font-display text-2xl font-bold tracking-tight">Вход в систему</h1>
-          <p className="text-mute font-bold text-sm mt-1.5">Свой логин выдаёт администратор. Пароль не обязателен — установите его в профиле.</p>
+          <p className="text-mute font-bold text-sm mt-1.5">Логин выдаёт администратор. Пароль не обязателен — установите его в профиле.</p>
           <form className="mt-6 grid gap-3" onSubmit={(e) => { e.preventDefault(); go(u, p); }}>
             <input className="input !h-12 !text-base font-mono" placeholder="Логин" value={u} onChange={(e) => { setU(e.target.value); setErr(""); }} autoFocus />
             <input className="input !h-12 !text-base font-mono" type="password" placeholder="Пароль (если задан)" value={p} onChange={(e) => { setP(e.target.value); setErr(""); }} />
@@ -102,31 +101,30 @@ export default function Login({ onKiosk }: { onKiosk: () => void }) {
             <button className="btn btn-ghost btn-sm self-start" onClick={() => setRec(!rec)}><I n="key" size={13} />Забыт пароль суперадмина</button>
           </div>
 
-          <Modal open={qr} onClose={() => setQr(false)} title="Подключение телефона к серверу" w="max-w-sm">
-            <div className="text-center grid gap-3">
-              {qrSrc ? <img src={qrSrc} alt="QR" className="mx-auto w-60 h-60 rounded-xl border border-line" /> : <div className="h-60 grid place-items-center text-mute font-bold">Формируем QR…</div>}
-              <p className="text-[12.5px] text-mute font-bold leading-relaxed">Сотрудник сканирует камерой — открывается приложение, подключённое к серверу. «Добавить на главный экран» — и получится PWA.</p>
-              <div className="rounded-lg bg-paper border border-line px-3 py-2 font-mono text-[12px] font-bold break-all">{window.location.href.split("#")[0]}</div>
-            </div>
-          </Modal>
-
           {rec && (
             <div className="mt-3 card p-4 anim-pop">
-              <p className="text-[12px] font-bold text-mute leading-relaxed">Введите резервный код восстановления (выдаётся владельцу системы). Пароль суперадмина будет сброшен на стандартный — сразу смените его.</p>
+              <p className="text-[12px] font-bold text-mute leading-relaxed">Введите зашифрованный резервный код восстановления. Пароль суперадмина сбросится на стандартный — сразу смените его.</p>
               <div className="flex gap-2 mt-2.5">
                 <input className="input font-mono !text-[13px]" type="password" placeholder="Резервный код" value={code} onChange={(e) => setCode(e.target.value)} />
                 <button className="btn btn-dark" onClick={() => {
-                  if (recoverRoot(code)) { toast("Пароль суперадмина сброшен на стандартный", "ok"); setRec(false); setCode(""); setU("root"); }
+                  if (recoverRoot(code)) { toast("Пароль сброшен на стандартный", "ok"); setRec(false); setCode(""); setU("root"); }
                   else toast("Неверный резервный код", "bad");
                 }}>Сбросить</button>
               </div>
             </div>
           )}
 
-          <p className="mt-6 text-[11px] font-bold text-mute leading-relaxed">Суперадмин создаёт сотрудников в админке; изначально все входят без пароля и устанавливают его сами. Работа идёт в одной Wi-Fi сети — ссылка для телефонов есть в трее сервера.</p>
+          <Modal open={qr} onClose={() => setQr(false)} title="Подключение телефона к серверу" w="max-w-sm">
+            <div className="text-center grid gap-3">
+              {qrSrc ? <img src={qrSrc} alt="QR" className="mx-auto w-60 h-60 rounded-xl border border-line" /> : <div className="h-60 grid place-items-center text-mute font-bold">Формируем…</div>}
+              <p className="text-[12.5px] text-mute font-bold leading-relaxed">Сотрудник сканирует камерой — открывается приложение этого сервера. «На главный экран» — и это PWA.</p>
+              <div className="rounded-lg bg-paper border border-line px-3 py-2 font-mono text-[12px] font-bold break-all">{window.location.href.split("#")[0]}</div>
+            </div>
+          </Modal>
+
+          <p className="mt-6 text-[11px] font-bold text-mute leading-relaxed">Сотрудников создаёт админ; изначально все входят без пароля. Работа в одной Wi-Fi сети — инструкция в разделе «Инструкции и API».</p>
         </div>
       </div>
     </div>
   );
 }
-

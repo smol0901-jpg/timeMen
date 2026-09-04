@@ -1,222 +1,140 @@
 import * as XLSX from "xlsx";
-import { DB, User, SHIFT_META, KIND_LABEL, PayMode } from "./types";
-import { summarize, summarizeAll, SumRow, workedOn, plannedOn, openPunchOf, punchDur, pieceSumOf, wsName, posName } from "./store";
-import { rangeKeys, fmtDateFull, fmtMin, todayKey, monthTitle, hDec } from "./time";
+import { DB, ShiftType } from "./types";
+import { summarizeAll, SumRow, wsName, posName } from "./store";
+import { rangeKeys, monthTitle, daysInMonth, hDec } from "./time";
 
 function save(wb: XLSX.WorkBook, name: string) {
   XLSX.writeFile(wb, name);
 }
-const PAY: Record<PayMode, string> = { hour: "почасовая", shift: "посменная", piece: "сдельная" };
 
-export function exportEmployees(db: DB) {
-  const rows = db.users.filter((u) => u.role !== "superadmin").map((u) => ({
-    Логин: u.username, ФИО: u.name, Роль: u.role === "admin" ? "админ" : "сотрудник",
-    Цех: wsName(db, u.workshopId), Должность: posName(db, u.positionId),
-    Оплата: PAY[u.payMode], "Ставка ₽/ч": u.rate || "", "Смена ₽": u.shiftCost || "",
-    Пароль: u.password ? "есть" : "нет", Активен: u.active ? "да" : "нет",
-  }));
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Сотрудники");
-  save(wb, "smenalan-sotrudniki.xlsx");
+export function exportAttendance(db: DB, from: string, to: string, kind: string) {
+  const ws = XLSX.utils.aoa_to_sheet([
+    [`СменаЛАН — ${kind} отчёт посещаемости`, `${from} — ${to}`],
+    [],
+    ["ФИО", "Логин", "Цех", "План, ч", "Факт, ч", "Переработка, ч", "Недоработка, ч", "Опоздания", "Смен", "Начислено, ₽", "Штрафы, ₽", "К выплате, ₽"],
+    ...summarizeAll(db, from, to).map((r) => [
+      r.user.name, r.user.username, wsName(db, r.user.workshopId),
+      hDec(r.planMin), hDec(r.factMin), hDec(r.otMin), hDec(r.shortMin), r.late, r.shifts,
+      Math.round(r.salary), Math.round(r.fineSum), Math.round(r.net),
+    ]),
+  ]);
+  ws["!cols"] = [{ wch: 24 }, { wch: 12 }, { wch: 26 }, { wch: 9 }, { wch: 9 }, { wch: 13 }, { wch: 13 }, { wch: 10 }, { wch: 7 }, { wch: 12 }, { wch: 10 }, { wch: 12 }];
+  const b = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(b, ws, "Отчёт");
+  save(b, `posechaemost_${from}_${to}.xlsx`);
 }
 
-export function exportScheduleMonth(db: DB, monthKey: string) {
-  const emps = db.users.filter((u) => u.role === "employee" && u.active);
-  const rows = emps.map((u) => {
-    const r: Record<string, string> = { Логин: u.username, ФИО: u.name, Цех: wsName(db, u.workshopId) };
-    const dim = Number(monthKey.slice(8, 10));
-    for (let d = 1; d <= dim; d++) {
-      const k = monthKey.slice(0, 8) + String(d).padStart(2, "0");
-      const c = db.schedule.find((s) => s.userId === u.id && s.date === k);
-      r[String(d)] = c ? SHIFT_META[c.type].code : "";
-    }
-    return r;
-  });
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "График");
-  save(wb, `smenalan-grafik-${monthKey}.xlsx`);
-}
-
-export function scheduleTemplate(db: DB, monthKey: string) {
-  const emps = db.users.filter((u) => u.role === "employee" && u.active);
-  const rows = emps.map((u) => {
-    const r: Record<string, string> = { Логин: u.username, ФИО: u.name };
-    const dim = Number(monthKey.slice(8, 10));
-    for (let d = 1; d <= dim; d++) r[String(d)] = "";
-    return r;
-  });
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Шаблон");
-  save(wb, `smenalan-shablon-grafika-${monthKey}.xlsx`);
-}
-
-export function parseScheduleFile(file: File, monthKey: string): Promise<{ username: string; date: string; type: keyof typeof SHIFT_META }[]> {
-  return new Promise((res, rej) => {
-    const rd = new FileReader();
-    rd.onerror = rej;
-    rd.onload = () => {
-      try {
-        const wb = XLSX.read(rd.result, { type: "array" });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: "" });
-        const out: { username: string; date: string; type: keyof typeof SHIFT_META }[] = [];
-        const codes: Record<string, keyof typeof SHIFT_META> = { Я: "day", Н: "night", В: "off", О: "vacation", Б: "sick" };
-        rows.forEach((r) => {
-          const login = String(r["Логин"] || r["логин"] || r["login"] || "").trim();
-          if (!login) return;
-          Object.keys(r).forEach((k) => {
-            const d = Number(k);
-            const v = String(r[k]).trim().toUpperCase();
-            if (d >= 1 && d <= 31 && codes[v]) {
-              out.push({ username: login, date: `${monthKey.slice(0, 8)}${String(d).padStart(2, "0")}`, type: codes[v] });
-            }
-          });
-        });
-        res(out);
-      } catch { rej(new Error("bad file")); }
-    };
-    rd.readAsArrayBuffer(file);
-  });
-}
-
-export function parseEmployeesFile(file: File): Promise<Partial<User>[]> {
-  return new Promise((res, rej) => {
-    const rd = new FileReader();
-    rd.onerror = rej;
-    rd.onload = () => {
-      try {
-        const wb = XLSX.read(rd.result, { type: "array" });
-        const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[wb.SheetNames[0]], { defval: "" });
-        const out = rows.map((r) => ({
-          username: String(r["Логин"] || r["логин"] || "").trim(),
-          name: String(r["ФИО"] || r["фио"] || "").trim(),
-          rate: Number(r["Ставка ₽/ч"] || r["Ставка"] || 0) || 0,
-          password: "",
-        })).filter((x) => x.username && x.name);
-        res(out as Partial<User>[]);
-      } catch { rej(new Error("bad file")); }
-    };
-    rd.readAsArrayBuffer(file);
-  });
-}
-
-export function exportPayroll(db: DB, rows: SumRow[], periodLabel: string) {
-  const sheet = rows.map((r, i) => ({
-    "№": i + 1, "ФИО": r.user.name, "Цех": wsName(db, r.user.workshopId), "Должность": posName(db, r.user.positionId),
-    "Оплата": PAY[r.user.payMode], "Норма, ч": hDec(r.planMin), "Факт, ч": hDec(r.factMin),
-    "Переработка, ч": hDec(r.otMin), "Недоработка, ч": hDec(r.shortMin), "Опозданий": r.late,
-    "Смен": r.shifts, "Сдельно, ₽": r.user.payMode === "piece" ? Math.round(r.pieceSum) : "",
-    "Ставка ₽/ч": r.user.rate || "", "Смена ₽": r.user.shiftCost || "", "Начислено, ₽": Math.round(r.salary),
-  }));
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sheet), "Табель");
-  save(wb, `smenalan-tabel-${periodLabel.replace(/[^\wа-яА-Я-]+/g, "_")}.xlsx`);
-}
-
-export function exportAttendance(db: DB, from: string, to: string, title: string) {
-  const emps = db.users.filter((u) => u.role === "employee" && u.active);
-  const keys = rangeKeys(from, to);
-  const rows = emps.map((u) => {
-    const r: Record<string, string | number> = { "ФИО": u.name, "Цех": wsName(db, u.workshopId) };
-    let fact = 0;
-    keys.forEach((k) => {
-      const w = workedOn(db, u.id, k);
-      fact += w;
-      r[fmtDateFull(k)] = w ? hDec(w) : "";
-    });
-    r["Итого, ч"] = hDec(fact);
-    return r;
-  });
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), title);
-  const req = db.requests.filter((q) => q.date >= from && q.date <= to).map((q) => ({
-    Дата: q.date, "Сотрудник": db.users.find((u) => u.id === q.userId)?.name || "?",
-    Тип: KIND_LABEL[q.kind], Статус: q.status === "pending" ? "ожидает" : q.status === "approved" ? "одобрена" : "отклонена",
-    Комментарий: q.note,
-  }));
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(req.length ? req : [{ " ": "Заявок за период нет" }]), "Заявки");
-  save(wb, `smenalan-${title}-${from}_${to}.xlsx`);
+export function exportPayroll(db: DB, rows: SumRow[], label: string) {
+  const ws = XLSX.utils.aoa_to_sheet([
+    [`СменаЛАН — табель и оплата`, label, db.settings.orgName, db.settings.orgInn],
+    [],
+    ["ФИО", "Цех", "Должность", "Оплата", "План, ч", "Факт, ч", "Перераб., ч", "Смен", "Ставка/смена", "Начислено, ₽", "Штрафы, ₽", "К выплате, ₽"],
+    ...rows.map((r) => [
+      r.user.name, wsName(db, r.user.workshopId), posName(db, r.user.positionId),
+      r.user.payMode === "hour" ? "почасовая" : r.user.payMode === "shift" ? "посменная" : "сдельная",
+      hDec(r.planMin), hDec(r.factMin), hDec(r.otMin), r.shifts,
+      r.user.payMode === "hour" ? `${r.user.rate} ₽/ч` : r.user.payMode === "shift" ? `${r.user.shiftCost} ₽/см` : "выработка",
+      Math.round(r.salary), Math.round(r.fineSum), Math.round(r.net),
+    ]),
+    [],
+    ["ИТОГО", "", "", "", hDec(rows.reduce((s, r) => s + r.planMin, 0)), hDec(rows.reduce((s, r) => s + r.factMin, 0)),
+      hDec(rows.reduce((s, r) => s + r.otMin, 0)), rows.reduce((s, r) => s + r.shifts, 0), "",
+      Math.round(rows.reduce((s, r) => s + r.salary, 0)), Math.round(rows.reduce((s, r) => s + r.fineSum, 0)), Math.round(rows.reduce((s, r) => s + r.net, 0))],
+  ]);
+  ws["!cols"] = [{ wch: 24 }, { wch: 26 }, { wch: 18 }, { wch: 10 }, { wch: 9 }, { wch: 9 }, { wch: 11 }, { wch: 7 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 12 }];
+  const b = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(b, ws, "Табель");
+  save(b, `tabel_${label}.xlsx`);
 }
 
 export function exportProduction(db: DB, from: string, to: string) {
-  const rows = db.production.filter((r) => r.date >= from && r.date <= to).map((r) => {
-    const p = db.products.find((x) => x.id === r.productId);
-    return {
-      Дата: r.date,
-      Сотрудник: db.users.find((u) => u.id === r.userId)?.name || "?",
-      Цех: wsName(db, db.users.find((u) => u.id === r.userId)?.workshopId || null),
-      Позиция: p?.name || "?", Кол: r.qty, Ед: p?.unit || "", "Цена": p?.price || 0, "Сумма, ₽": Math.round(r.qty * (p?.price || 0)),
-      Примечание: r.note,
-    };
-  });
-  const byProd = new Map<string, number>();
-  db.production.filter((r) => r.date >= from && r.date <= to).forEach((r) => {
-    const p = db.products.find((x) => x.id === r.productId);
-    const k = p?.name || "?";
-    byProd.set(k, (byProd.get(k) || 0) + r.qty);
-  });
-  const summary = [...byProd.entries()].map(([name, qty]) => ({ Позиция: name, "Всего, кг": Math.round(qty * 10) / 10 }));
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows.length ? rows : [{ " ": "Нет выработки за период" }]), "Выработка");
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summary.length ? summary : [{ " ": "Нет данных" }]), "Итоги по позициям");
-  save(wb, `smenalan-vyrabotka-${from}_${to}.xlsx`);
+  const ws = XLSX.utils.aoa_to_sheet([
+    ["СменаЛАН — выработка", `${from} — ${to}`],
+    [],
+    ["Дата", "ФИО", "Цех", "Позиция", "Кол-во", "Ед.", "Цена ₽", "Сумма ₽", "Примечание"],
+    ...db.production.filter((r) => r.date >= from && r.date <= to).map((r) => {
+      const p = db.products.find((x) => x.id === r.productId);
+      const u = db.users.find((x) => x.id === r.userId);
+      return [r.date, u?.name || "?", wsName(db, u?.workshopId || null), p?.name || "?", r.qty, p?.unit || "", p?.price || 0, Math.round(r.qty * (p?.price || 0)), r.note];
+    }),
+  ]);
+  const b = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(b, ws, "Выработка");
+  save(b, `vyrabotka_${from}_${to}.xlsx`);
 }
 
-export function exportMyStats(db: DB, userId: string, name: string, from: string, to: string) {
-  const row = summarize(db, db.users.find((u) => u.id === userId)!, from, to);
-  const keys = rangeKeys(from, to);
-  const days = keys.map((k) => {
-    const w = workedOn(db, userId, k);
-    const pl = plannedOn(db, userId, k);
-    return { Дата: fmtDateFull(k), "План, ч": hDec(pl), "Факт, ч": w ? hDec(w) : "", "Баланс, ч": hDec(w - pl) };
-  });
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(days), "По дням");
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([{
-    Период: `${fmtDateFull(from)} — ${fmtDateFull(to)}`, "Факт, ч": hDec(row.factMin), "План, ч": hDec(row.planMin),
-    "Переработка, ч": hDec(row.otMin), "Недоработка, ч": hDec(row.shortMin), "Опозданий": row.late, "К выплате, ₽": Math.round(row.salary),
-  }]), "Итог"),
-  save(wb, `smenalan-${name.replace(/\s+/g, "_")}-${from}_${to}.xlsx`);
-}
-
-export function parseProductsFile(file: File): Promise<{ name: string; unit: string; price: number }[]> {
-  return new Promise((res, rej) => {
-    const rd = new FileReader();
-    rd.onerror = rej;
-    rd.onload = () => {
-      try {
-        const wb = XLSX.read(rd.result, { type: "array" });
-        const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[wb.SheetNames[0]], { defval: "" });
-        res(rows.map((r) => ({
-          name: String(r["Название"] || r["Позиция"] || r["name"] || "").trim(),
-          unit: String(r["Ед"] || r["unit"] || "кг").trim() || "кг",
-          price: Number(r["Цена"] || r["price"] || 0) || 0,
-        })).filter((x) => x.name));
-      } catch { rej(new Error("bad file")); }
-    };
-    rd.readAsArrayBuffer(file);
-  });
-}
-
-export function productsTemplate() {
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([
-    { Название: "Филе", Ед: "кг", Цена: 180 },
-    { Название: "Крыло", Ед: "кг", Цена: 95 },
-  ]), "Продукция");
-  save(wb, "smenalan-shablon-produktsii.xlsx");
+export function exportEmployees(db: DB) {
+  const ws = XLSX.utils.aoa_to_sheet([
+    ["Логин", "ФИО", "Роль", "Цех", "Должность", "Оплата", "Ставка ₽/ч", "Смена ₽"],
+    ...db.users.filter((u) => !u.archived).map((u) => [u.username, u.name, u.role, wsName(db, u.workshopId), posName(db, u.positionId), u.payMode, u.rate, u.shiftCost]),
+  ]);
+  const b = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(b, ws, "Сотрудники");
+  save(b, "sotrudniki.xlsx");
 }
 
 export function exportFot(db: DB, from: string, to: string) {
-  const rows = summarizeAll(db, from, to).map((r) => ({
-    "ФИО": r.user.name, "Цех": wsName(db, r.user.workshopId), "Должность": posName(db, r.user.positionId),
-    "Оплата": PAY[r.user.payMode], "Часы": hDec(r.factMin), "Смен": r.shifts, "Начислено, ₽": Math.round(r.salary),
-  }));
-  const tot = rows.reduce((s, r) => s + (r["Начислено, ₽"] as number), 0);
-  rows.push({ "ФИО": "ИТОГО", "Цех": "", "Должность": "", "Оплата": "", "Часы": "", "Смен": "", "Начислено, ₽": tot } as never);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "ФОТ");
-  save(wb, `smenalan-fot-${from}_${to}.xlsx`);
+  exportPayroll(db, summarizeAll(db, from, to), `${from}_${to}`);
 }
 
-export { workedOn, plannedOn, openPunchOf, punchDur, pieceSumOf, todayKey, monthTitle };
+export function scheduleTemplate(db: DB, monthKey: string) {
+  const dim = daysInMonth(monthKey + "-01");
+  const head = ["Логин", "ФИО", ...rangeKeys(monthKey + "-01", `${monthKey}-${String(dim).padStart(2, "0")}`).map((k) => k.slice(8))];
+  const rows = db.users.filter((u) => u.role === "employee" && !u.archived).map((u) => [
+    u.username, u.name,
+    ...rangeKeys(monthKey + "-01", `${monthKey}-${String(dim).padStart(2, "0")}`).map((k) => {
+      const c = db.schedule.find((s) => s.userId === u.id && s.date === k);
+      return c ? c.type.charAt(0).toUpperCase() : "";
+    }),
+  ]);
+  const ws = XLSX.utils.aoa_to_sheet([
+    [`Шаблон графика на ${monthTitle(monthKey + "-01")}`],
+    ["Коды: Я — день, Н — ночь, В — выходной, О — отпуск, Б — больничный, пусто — нет"],
+    head, ...rows,
+  ]);
+  const b = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(b, ws, "График");
+  save(b, `grafik_shablon_${monthKey}.xlsx`);
+}
+
+export function exportScheduleMonth(db: DB, monthKey: string) { scheduleTemplate(db, monthKey); }
+
+const CODES: Record<string, ShiftType> = { "Я": "day", "D": "day", "Н": "night", "N": "night", "В": "off", "О": "vacation", "Б": "sick" };
+
+export async function parseScheduleFile(file: File, monthKey: string): Promise<{ username: string; date: string; type: ShiftType }[]> {
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: "array" });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows: (string | number)[][] = XLSX.utils.sheet_to_json(ws, { header: 1 });
+  const headIdx = rows.findIndex((r) => String(r[0] || "").trim().toLowerCase() === "логин");
+  if (headIdx < 0) throw new Error("no header");
+  const head = rows[headIdx].map((x) => String(x ?? ""));
+  const out: { username: string; date: string; type: ShiftType }[] = [];
+  for (const r of rows.slice(headIdx + 1)) {
+    const username = String(r[0] ?? "").trim();
+    if (!username) continue;
+    for (let i = 2; i < head.length; i++) {
+      const day = String(head[i] ?? "").trim();
+      if (!/^\d{1,2}$/.test(day)) continue;
+      const code = String(r[i] ?? "").trim().toUpperCase();
+      if (!code || !(code in CODES)) continue;
+      out.push({ username, date: `${monthKey}-${String(Number(day)).padStart(2, "0")}`, type: CODES[code] });
+    }
+  }
+  return out;
+}
+
+export async function parseEmployeesFile(file: File): Promise<Partial<{ username: string; name: string; rate: number }>[]> {
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: "array" });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows: (string | number)[][] = XLSX.utils.sheet_to_json(ws, { header: 1 });
+  const out: Partial<{ username: string; name: string; rate: number }>[] = [];
+  for (const r of rows) {
+    const u = String(r[0] ?? "").trim();
+    const n = String(r[1] ?? "").trim();
+    if (!u || !n || u.toLowerCase() === "логин") continue;
+    out.push({ username: u.replace(/^@/, ""), name: n, rate: Number(r[6]) || 0 });
+  }
+  return out;
+}

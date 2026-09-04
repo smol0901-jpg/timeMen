@@ -6,19 +6,9 @@ import Login from "./components/Login";
 import Kiosk from "./components/Kiosk";
 import { PunchView, StatsView, ScheduleView, RequestsView, ProfileView } from "./screens/employee";
 import { DashboardView, EmployeesView, ScheduleEditor } from "./screens/admin";
-import { RequestsAdmin, ReportsView, PermsView, DataIOView, AuditView, RemindersView, SettingsView } from "./screens/admin2";
-import ProductionView from "./screens/production";
-import OrgView from "./screens/org";
-import AIView from "./screens/ai";
-import HelpView from "./screens/help";
-import PayrollView from "./screens/payroll";
-import { ArchiveView } from "./screens/hr";
-import FeedView from "./components/feed";
-import ChatView from "./components/chat";
-import GamesView from "./screens/games";
+import { RequestsAdmin, ReportsView, PermsView, DataIOView, AuditView, RemindersView, SettingsView, PayrollView, ArchiveView } from "./screens/admin2";
+import { FeedView, ChatView, GamesView, AIView, BotView, CameraView, OrgView, ProductionView, HelpView } from "./screens/misc";
 import { relTime, todayKey } from "./lib/time";
-
-type LayoutPref = "auto" | "desktop" | "mobile";
 
 export default function App() {
   return (
@@ -47,8 +37,8 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { err
         <div className="card max-w-lg mx-auto mt-10 p-6 text-center anim-pop">
           <div className="mx-auto w-12 h-12 rounded-2xl bg-bad-soft text-bad grid place-items-center"><I n="warn" size={22} /></div>
           <b className="font-display text-sm block mt-3">Экран не смог отрисоваться</b>
-          <p className="text-[12.5px] text-mute font-bold mt-1.5">Ошибка: {this.state.err}. Данные не пострадали — база на сервере цела.</p>
-          <button className="btn btn-pri mt-4" onClick={() => { this.setState({ err: null }); window.location.reload(); }}>Перезагрузить приложение</button>
+          <p className="text-[12.5px] text-mute font-bold mt-1.5">Ошибка: {this.state.err}. Данные целы — база на сервере.</p>
+          <button className="btn btn-pri mt-4" onClick={() => window.location.reload()}>Перезагрузить</button>
         </div>
       );
     return this.props.children;
@@ -56,37 +46,34 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { err
 }
 
 function Shell({ onKiosk }: { onKiosk: () => void }) {
-  const { db, me, can, online, logout, markNoticesRead } = useStore();
+  const { db, me, can, logout, markNoticesRead } = useStore();
   const [view, setView] = useState<ModuleId>("punch");
-  const [pref, setPref] = useState<LayoutPref>("auto");
   const [wide, setWide] = useState(() => window.innerWidth >= 1024);
   const [bell, setBell] = useState(false);
   const [nav, setNav] = useState(false);
-  const [installEvt, setInstallEvt] = useState<Event & { prompt?: () => void } | null>(null);
+  const [installEvt, setInstallEvt] = useState<(Event & { prompt?: () => void }) | null>(null);
 
   useEffect(() => {
     const h = () => setWide(window.innerWidth >= 1024);
     window.addEventListener("resize", h);
-    const bi = (e: Event) => { e.preventDefault(); setInstallEvt(e as never); };
+    const bi = (e: Event) => { e.preventDefault(); setInstallEvt(e as Event & { prompt?: () => void }); };
     window.addEventListener("beforeinstallprompt", bi);
     return () => { window.removeEventListener("resize", h); window.removeEventListener("beforeinstallprompt", bi); };
   }, []);
 
-  const device = pref === "auto" ? (wide ? "desktop" : "mobile") : pref;
+  const device = wide ? "desktop" : "mobile";
   const allowed = useMemo(() => MODULES.filter((m) => can(m.id, device)), [db, me, device]);
   const isDesktop = device === "desktop";
-
   useEffect(() => {
     if (!allowed.some((m) => m.id === view) && allowed.length) setView(allowed[0].id);
   }, [allowed, view]);
-
   if (!me) return null;
+
   const notices = myNotices(db, me);
   const unread = notices.filter((n) => !n.readBy.includes(me.id));
   const myRem = remindersFor(db, me).filter((r) => r.due <= todayKey() && !r.doneBy.includes(me.id));
   const title = MODULES.find((m) => m.id === view)?.label || "";
   const isAdmin = me.role !== "employee";
-
   const go = (v: ModuleId) => { setView(v); setNav(false); setBell(false); };
 
   const content = (() => {
@@ -105,6 +92,8 @@ function Shell({ onKiosk }: { onKiosk: () => void }) {
       case "org": return <OrgView />;
       case "reports": return <ReportsView />;
       case "ai": return <AIView />;
+      case "bot": return <BotView />;
+      case "camera": return <CameraView />;
       case "payroll": return <PayrollView />;
       case "archive": return <ArchiveView />;
       case "reminders": return <RemindersView />;
@@ -117,32 +106,28 @@ function Shell({ onKiosk }: { onKiosk: () => void }) {
     }
   })();
 
-  const pendCount = isAdmin ? db.requests.filter((r) => r.status === "pending").length : 0;
+  const userMods = allowed.filter((m) => m.group === "user");
+  const adminMods = allowed.filter((m) => m.group === "admin");
+
   const NavBtn = ({ m, horizontal }: { m: (typeof MODULES)[number]; horizontal?: boolean }) => (
     <button onClick={() => go(m.id)}
-      className={`relative flex items-center gap-2.5 rounded-lg font-bold transition-all ${horizontal ? "flex-col gap-1 px-2 py-1.5 text-[9.5px] min-w-[58px]" : "px-3 h-10 text-[13px] w-full text-left"}
+      className={`flex items-center gap-2.5 rounded-lg font-bold transition-all ${horizontal ? "flex-col gap-1 px-2 py-1.5 text-[9.5px] min-w-[56px]" : "px-3 h-10 text-[13px] w-full text-left"}
       ${view === m.id ? (horizontal ? "text-accent" : "bg-accent text-white shadow-[0_3px_12px_-4px_rgba(229,111,36,0.7)]") : horizontal ? "text-steel-200" : "text-steel-200 hover:bg-steel-800 hover:text-paper"}`}>
       <I n={m.icon} size={horizontal ? 18 : 16} />
       <span className={horizontal ? "truncate max-w-[56px]" : "truncate"}>{m.label}</span>
-      {horizontal && m.id === "requests" && pendCount > 0 && (
-        <span className="absolute top-0 right-1.5 min-w-[15px] h-[15px] px-0.5 rounded-full bg-bad text-white text-[9px] font-extrabold grid place-items-center">{pendCount}</span>
-      )}
     </button>
   );
-
-  const userMods = allowed.filter((m) => m.group === "user");
-  const adminMods = allowed.filter((m) => m.group === "admin");
 
   return (
     <div className="h-full flex flex-col lg:flex-row">
       {!isDesktop && (
-        <div className="bg-steel-950 text-paper px-4 py-2.5 flex items-center gap-3 shrink-0 sticky top-0 z-40">
+        <div className="bg-steel-950 text-paper px-4 pt-[max(10px,env(safe-area-inset-top))] pb-2.5 flex items-center gap-3 shrink-0 sticky top-0 z-40">
           <Logo size={30} />
           <b className="font-display text-[13px] tracking-tight">СМЕНА<span className="text-accent">ЛАН</span></b>
           <OnlineDot />
           <div className="ml-auto flex items-center gap-1.5">
-            <BellBtn bell={bell} setBell={setBell} unread={unread.length + myRem.length} notices={notices} me={me} onRead={markNoticesRead} reminders={myRem} />
-            {isAdmin && <button className="btn btn-sm btn-ghost !border-steel-600 !bg-steel-800 !text-steel-200 !px-2" onClick={onKiosk} title="Режим терминала"><I n="desk" size={14} /></button>}
+            <BellBtn bell={bell} setBell={setBell} unread={unread.length + myRem.length} notices={notices} onRead={markNoticesRead} reminders={myRem} />
+            {isAdmin && <button className="btn btn-sm !border-steel-600 !bg-steel-800 !text-steel-200 !px-2" onClick={onKiosk} title="Терминал"><I n="desk" size={14} /></button>}
             <button className="w-8 h-8 rounded-full grid place-items-center" onClick={() => go("profile")}><Avatar u={me} size={30} /></button>
           </div>
         </div>
@@ -165,8 +150,8 @@ function Shell({ onKiosk }: { onKiosk: () => void }) {
           </nav>
           <div className="p-3 border-t border-steel-700 grid gap-2">
             <OnlineDot />
-            {isAdmin && <button className="btn btn-sm btn-ghost !border-steel-600 !bg-steel-800 !text-steel-200" onClick={onKiosk}><I n="desk" size={14} />Режим терминала</button>}
-            {installEvt && <button className="btn btn-sm btn-soft" onClick={() => (installEvt as { prompt?: () => void }).prompt?.()}><I n="phone" size={14} />Установить PWA</button>}
+            {isAdmin && <button className="btn btn-sm !border-steel-600 !bg-steel-800 !text-steel-200" onClick={onKiosk}><I n="desk" size={14} />Режим терминала</button>}
+            {installEvt && <button className="btn btn-sm btn-soft" onClick={() => installEvt.prompt?.()}><I n="phone" size={14} />Установить PWA</button>}
             <div className="flex items-center gap-2.5 bg-steel-800 rounded-xl px-3 py-2.5">
               <Avatar u={me} size={34} />
               <div className="min-w-0 flex-1">
@@ -184,36 +169,22 @@ function Shell({ onKiosk }: { onKiosk: () => void }) {
           <header className="bg-surface/90 backdrop-blur border-b border-line px-6 py-3 flex items-center gap-4 sticky top-0 z-30">
             <h1 className="font-display text-[17px] font-semibold tracking-tight">{title}</h1>
             <div className="ml-auto flex items-center gap-3">
-              <div className="flex items-center bg-paper border border-line rounded-lg p-0.5 gap-0.5">
-                {([["auto", "info", "Авто"], ["desktop", "desk", "ПК"], ["mobile", "phone", "PWA"]] as [LayoutPref, string, string][]).map(([p, ic, l]) => (
-                  <button key={p} onClick={() => setPref(p)}
-                    className={`inline-flex items-center gap-1.5 rounded-md px-2.5 h-7 text-[11px] font-extrabold transition ${pref === p ? "bg-steel-900 text-paper shadow" : "text-mute hover:text-ink"}`}>
-                    <I n={ic} size={12} />{l}
-                  </button>
-                ))}
-              </div>
-              <BellBtn bell={bell} setBell={setBell} unread={unread.length + myRem.length} notices={notices} me={me} onRead={markNoticesRead} reminders={myRem} />
+              <BellBtn bell={bell} setBell={setBell} unread={unread.length + myRem.length} notices={notices} onRead={markNoticesRead} reminders={myRem} />
               <button className="w-9 h-9 rounded-full grid place-items-center" onClick={() => go("profile")}><Avatar u={me} size={34} /></button>
             </div>
           </header>
         )}
 
-        {!online && (
-          <div className="bg-warn-soft border-b border-warn/30 px-4 sm:px-6 py-2 flex items-center gap-2.5 flex-wrap">
-            <I n="wifi" size={15} className="text-warn" />
-            <span className="text-[12px] font-extrabold text-warn">Локальный режим: LAN-сервер недоступен — данные пока только на этом устройстве.</span>
-            {can("help", device) && <button className="btn btn-sm btn-ghost !h-7 !text-[11px]" onClick={() => go("help")}><I n="help" size={12} />Инструкция по запуску</button>}
-          </div>
-        )}
-
-        <main className="flex-1 overflow-y-auto p-3 sm:p-6"><ErrorBoundary key={view}>{content}</ErrorBoundary></main>
+        <main className="flex-1 overflow-y-auto p-4 sm:p-6">
+          <ErrorBoundary key={view}>{content}</ErrorBoundary>
+        </main>
       </div>
 
       {!isDesktop && (
         <nav className="bg-steel-950 text-paper flex items-stretch justify-around px-1 pt-1.5 pb-[max(6px,env(safe-area-inset-bottom))] shrink-0 sticky bottom-0 z-40 border-t border-steel-700 overflow-x-auto dark-scroll">
           {allowed.slice(0, 6).map((m) => <NavBtn key={m.id} m={m} horizontal />)}
           {allowed.length > 6 && (
-            <button onClick={() => setNav(true)} className={`flex flex-col items-center gap-1 px-2 py-1.5 text-[9.5px] font-bold min-w-[58px] ${nav ? "text-accent" : "text-steel-200"}`}>
+            <button onClick={() => setNav(true)} className={`flex flex-col items-center gap-1 px-2 py-1.5 text-[9.5px] font-bold min-w-[56px] ${nav ? "text-accent" : "text-steel-200"}`}>
               <I n="grid" size={18} />Ещё
             </button>
           )}
@@ -235,7 +206,7 @@ function Shell({ onKiosk }: { onKiosk: () => void }) {
                 </button>
               ))}
             </div>
-            <button className="btn btn-ghost btn-sm w-full mt-3 !border-steel-600 !bg-steel-800 !text-steel-200" onClick={logout}><I n="logout" size={13} />Выйти</button>
+            <button className="btn !border-steel-600 !bg-steel-800 !text-steel-200 btn-sm w-full mt-3" onClick={logout}><I n="logout" size={13} />Выйти</button>
           </div>
         </div>
       )}
@@ -243,9 +214,9 @@ function Shell({ onKiosk }: { onKiosk: () => void }) {
   );
 }
 
-function BellBtn({ bell, setBell, unread, notices, me, onRead, reminders }: {
+function BellBtn({ bell, setBell, unread, notices, onRead, reminders }: {
   bell: boolean; setBell: (v: boolean) => void; unread: number; notices: ReturnType<typeof myNotices>;
-  me: NonNullable<ReturnType<typeof useStore>["me"]>; onRead: () => void; reminders: { id: string; title: string; due: string }[];
+  onRead: () => void; reminders: { id: string; title: string; due: string }[];
 }) {
   return (
     <div className="relative">
@@ -262,10 +233,10 @@ function BellBtn({ bell, setBell, unread, notices, me, onRead, reminders }: {
               <span className="text-[11px] text-mute font-bold ml-auto">прочитано при открытии</span>
             </div>
             <div className="max-h-[380px] overflow-y-auto">
-              {reminders.length > 0 && reminders.map((r) => (
+              {reminders.map((r) => (
                 <div key={r.id} className="px-4 py-2.5 border-b border-line/60 flex gap-2.5 bg-warn-soft/40">
                   <I n="bell" size={15} className="text-warn shrink-0 mt-0.5" />
-                  <div><b className="text-[12.5px] block">Напоминание: {r.title}</b><span className="text-[11px] text-mute font-bold">к выполнению · раздел «Моя смена»</span></div>
+                  <div><b className="text-[12.5px] block">Напоминание: {r.title}</b><span className="text-[11px] text-mute font-bold">раздел «Моя смена»</span></div>
                 </div>
               ))}
               {notices.length === 0 && reminders.length === 0 && <p className="text-center text-[12px] font-bold text-mute py-8">Пока тихо</p>}

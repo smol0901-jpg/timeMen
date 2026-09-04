@@ -1,3 +1,3 @@
-pystray>=0.19.5
-Pillow>=9.0.0
-qrcode>=7.4.0
+pystray
+Pillow
+qrcode
