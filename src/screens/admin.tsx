@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useStore, userById, wsName, openPunchOf, punchDur } from "../lib/store";
 import { SHIFT_META, ShiftType, Role, PayMode, PAY_LABEL, User } from "../lib/types";
 import {
@@ -8,6 +8,9 @@ import {
 import { I, Avatar, useToast, Modal, Field, Empty, Seg, RoleBadge, StatTile, Tabs, Confirm } from "../components/ui";
 import { exportScheduleMonth, scheduleTemplate, parseScheduleFile, parseEmployeesFile } from "../lib/excel";
 import { DossierModal, FinePanel, RatingPanel } from "./admin2";
+import { embeddingFromFile, faceReady } from "../lib/face";
+import { genEmpNo, makeLogin, makeBarcode } from "../lib/store";
+import QRCode from "qrcode";
 
 // ================= ДАШБОРД =================
 export function DashboardView() {
@@ -170,7 +173,7 @@ function BestStrip() {
 const AV_COLORS = ["#e56f24", "#3f6d9e", "#17875c", "#a97a12", "#7a4fbf", "#c74436", "#0f8b8d", "#b0487d"];
 
 export function EmployeesView() {
-  const { db, me, addUser, updateUser, archiveUser } = useStore();
+  const { db, me, addUser, updateUser, archiveUser, updateUserFace } = useStore();
   const { toast } = useToast();
   const [modal, setModal] = useState<null | { edit?: User }>(null);
   const [del, setDel] = useState<User | null>(null);
@@ -180,34 +183,79 @@ export function EmployeesView() {
   const [archTone, setArchTone] = useState<"pos" | "neg" | "neutral">("neutral");
   const [archNote, setArchNote] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
-  const [f, setF] = useState({ username: "", name: "", role: "employee" as Role, workshopId: "", positionId: "", payMode: "hour" as PayMode, rate: "", shiftCost: "", password: "" });
+  const photoRef = useRef<HTMLInputElement>(null);
+  const [f, setF] = useState({ username: "", name: "", role: "employee" as Role, workshopId: "", positionId: "", payMode: "hour" as PayMode, rate: "", shiftCost: "", password: "", avatar: null as string | null });
+  const [faceMsg, setFaceMsg] = useState("");
+  const [passFor, setPassFor] = useState<User | null>(null);
+  const [passQr, setPassQr] = useState("");
+  const [capture, setCapture] = useState(false);
 
   const applyPosition = (pid: string) => {
     const p = db.positions.find((x) => x.id === pid);
     setF((prev) => ({ ...prev, positionId: pid, payMode: p?.defPay || prev.payMode, rate: p ? String(p.rate) : prev.rate, shiftCost: p ? String(p.shiftCost) : prev.shiftCost }));
   };
+  const setPhoto = async (src: string) => {
+    setF((prev) => ({ ...prev, avatar: src }));
+    setFaceMsg("Анализируем лицо…");
+    const emb = await embeddingFromFile(src);
+    setFaceMsg(emb ? "Лицо распознано — биометрия будет работать" : "Лицо на фото не найдено — биометрия недоступна, отметки по паролю/касанию");
+  };
   const save = () => {
+    if (f.role === "employee" && !f.avatar && !modal?.edit?.avatar) {
+      toast("Загрузите фотографию сотрудника — она обязательна для идентификации (биометрия, пропуск)", "bad");
+      return;
+    }
     if (modal?.edit) {
       const r = updateUser(modal.edit.id, {
         username: f.username, name: f.name, role: f.role, workshopId: f.workshopId || null, positionId: f.positionId || null,
         payMode: f.payMode, rate: Number(f.rate) || 0, shiftCost: Number(f.shiftCost) || 0, password: f.password,
+        ...(f.avatar ? { avatar: f.avatar } : {}),
       });
+      if (!r && f.avatar) {
+        embeddingFromFile(f.avatar).then((emb) => {
+          if (emb) updateUserFace(modal.edit!.id, emb);
+        });
+      }
       toast(r || "Сохранено", r ? "bad" : "ok");
     } else {
       const r = addUser({
         username: f.username, name: f.name, role: f.role, workshopId: f.workshopId || null, positionId: f.positionId || null,
         payMode: f.payMode, rate: Number(f.rate) || 0, shiftCost: Number(f.shiftCost) || 0, password: f.password,
-        color: AV_COLORS[db.users.length % AV_COLORS.length], bio: "", active: true,
+        color: AV_COLORS[db.users.length % AV_COLORS.length], bio: "", active: true, avatar: f.avatar,
       });
-      toast(r || "Создан — пароль не обязателен", r ? "bad" : "ok");
+      if (!r && f.avatar) {
+        const created = db.users.length; // empNo уже присвоен в store; вектор лица привяжем по логину
+        void created;
+        embeddingFromFile(f.avatar).then((emb) => {
+          if (emb) {
+            const u = db.users.find((x) => x.username.toLowerCase() === f.username.trim().toLowerCase()) || null;
+            if (u) updateUserFace(u.id, emb);
+          }
+        });
+      }
+      toast(r || "Создан: таб. номер и логин — автоматически, пароль не обязателен", r ? "bad" : "ok");
     }
     setModal(null);
+  };
+  const openPass = async (u: User) => {
+    setPassFor(u);
+    const src = await QRCode.toDataURL(makeBarcode(u.empNo || ""), { width: 300, margin: 1 });
+    setPassQr(src);
+  };
+  const printPass = (u: User) => {
+    const html = `<html><head><title>Пропуск</title><style>body{font-family:Arial;margin:24px;text-align:center}img{width:240px;height:240px;border:1px solid #ccc;border-radius:12px}h2{margin:12px 0 4px}.sub{color:#555}</style></head><body>
+      ${u.avatar ? `<img src="${u.avatar}" style="width:120px;height:120px;border-radius:50%;object-fit:cover" />` : ""}
+      <h2>${u.name}</h2><div class="sub">${wsName(db, u.workshopId)} · таб. № ${u.empNo}</div>
+      <p><img src="${passQr}" /></p><div class="sub">Код для терминала: <b>${u.empNo}</b> · СменаЛАН</div>
+      <script>window.onload=function(){setTimeout(function(){window.print()},200)};<\/script></body></html>`;
+    const w = window.open("", "_blank", "width=480,height=640");
+    if (w) { w.document.write(html); w.document.close(); }
   };
 
   return (
     <div className="grid gap-4">
       <div className="flex items-center gap-2 flex-wrap">
-        <button className="btn btn-pri" onClick={() => { setF({ username: "", name: "", role: "employee", workshopId: db.workshops[0]?.id || "", positionId: "", payMode: "hour", rate: "", shiftCost: "", password: "" }); setModal({}); }}><I n="plus" size={16} />Создать сотрудника</button>
+        <button className="btn btn-pri" onClick={() => { setF({ username: "", name: "", role: "employee", workshopId: db.workshops[0]?.id || "", positionId: "", payMode: "hour", rate: "", shiftCost: "", password: "", avatar: null }); setFaceMsg(""); setModal({}); }}><I n="plus" size={16} />Создать сотрудника</button>
         <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={async (e) => {
           const file = e.target.files?.[0];
           e.target.value = "";
@@ -262,9 +310,11 @@ export function EmployeesView() {
                     <button className="w-8 h-8 rounded-md grid place-items-center text-mute hover:bg-paper hover:text-ink transition" title="Досье и живой график" onClick={() => setDossier(u)}><I n="chart" size={14} /></button>
                     <button className="w-8 h-8 rounded-md grid place-items-center text-mute hover:bg-warn-soft hover:text-warn transition" title="Штрафы и оценки" onClick={() => setHrFor(u)}><I n="star" size={14} /></button>
                     <button className="w-8 h-8 rounded-md grid place-items-center text-mute hover:bg-paper hover:text-ink transition" title="Редактировать" onClick={() => {
-                      setF({ username: u.username, name: u.name, role: u.role, workshopId: u.workshopId || "", positionId: u.positionId || "", payMode: u.payMode, rate: String(u.rate || ""), shiftCost: String(u.shiftCost || ""), password: u.password });
+                      setF({ username: u.username, name: u.name, role: u.role, workshopId: u.workshopId || "", positionId: u.positionId || "", payMode: u.payMode, rate: String(u.rate || ""), shiftCost: String(u.shiftCost || ""), password: u.password, avatar: u.avatar });
+                      setFaceMsg(u.faceEmbedding ? "Биометрия активна" : "");
                       setModal({ edit: u });
                     }}><I n="edit" size={14} /></button>
+                    <button className="w-8 h-8 rounded-md grid place-items-center text-mute hover:bg-night-soft hover:text-night transition" title="QR-пропуск (печать)" onClick={() => openPass(u)}><I n="qr" size={14} /></button>
                     {u.role !== "superadmin" && (
                       <button className="w-8 h-8 rounded-md grid place-items-center text-mute hover:bg-bad-soft hover:text-bad transition" title="Уволить → архив (30 дней)" onClick={() => { setDel(u); setArchReason(""); setArchTone("neutral"); setArchNote(""); }}><I n="layers" size={14} /></button>
                     )}
@@ -278,17 +328,52 @@ export function EmployeesView() {
 
       <Modal open={!!modal} onClose={() => setModal(null)} title={modal?.edit ? `Редактирование: ${modal.edit.name}` : "Новый сотрудник"} w="max-w-xl"
         foot={<><button className="btn btn-ghost" onClick={() => setModal(null)}>Отмена</button><button className="btn btn-pri" onClick={save}><I n="check" size={15} />Сохранить</button></>}>
-        <div className="grid sm:grid-cols-2 gap-4">
-          <Field label="Логин"><input className="input font-mono" value={f.username} onChange={(e) => setF({ ...f, username: e.target.value })} placeholder="ivan" /></Field>
+        <div className="grid gap-4">
+          <div className={`rounded-xl border-2 border-dashed p-4 flex items-center gap-4 ${f.avatar ? "border-ok/50 bg-ok-soft/40" : "border-line bg-paper/60"}`}>
+            {f.avatar ? <img src={f.avatar} alt="" className="w-16 h-16 rounded-full object-cover border-2 border-ok" /> : <span className="w-16 h-16 rounded-full bg-line grid place-items-center text-mute"><I n="camera" size={24} /></span>}
+            <div className="flex-1 min-w-0">
+              <b className="text-[13px] block">Фотография {f.role === "employee" ? "(обязательно)" : ""}</b>
+              <span className="text-[11.5px] font-bold text-mute leading-snug block">Используется для биометрического сравнения на терминале и в пропуске. Нейросеть распознаёт лицо автоматически.</span>
+              {faceMsg && <span className={`text-[11px] font-extrabold block mt-1 ${faceMsg.includes("распознано") || faceMsg.includes("активна") ? "text-ok" : "text-warn"}`}>{faceMsg}</span>}
+            </div>
+            <div className="grid gap-1.5 shrink-0">
+              <input ref={photoRef} type="file" accept="image/*" className="hidden" onChange={async (e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (!file) return;
+                const { shrinkImage } = await import("../lib/store");
+                setPhoto(await shrinkImage(file, 320));
+              }} />
+              <button className="btn btn-ghost btn-sm" onClick={() => photoRef.current?.click()}><I n="upload" size={12} />Файл</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => setCapture(true)}><I n="camera" size={12} />Снять</button>
+            </div>
+          </div>
+        </div>
+        <div className="grid sm:grid-cols-2 gap-4 mt-4">
+          <Field label="Логин" hint={modal?.edit ? "" : "Пусто — сгенерируется из фамилии, цеха и даты"}>
+            <div className="flex gap-1.5">
+              <input className="input font-mono" value={f.username} onChange={(e) => setF({ ...f, username: e.target.value })} placeholder="ivanov-c1-2502" />
+              {!modal?.edit && <button className="btn btn-ghost btn-sm !h-10 shrink-0" title="Сгенерировать автоматически" onClick={() => { setF((p) => ({ ...p, username: makeLogin(db, p.name || "Сотрудник", p.workshopId || null) })); }}><I n="zap" size={13} /></button>}
+            </div>
+          </Field>
           <Field label="ФИО"><input className="input" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
           <Field label="Роль">
             <select className="input" value={f.role} onChange={(e) => setF({ ...f, role: e.target.value as Role })} disabled={modal?.edit?.id === "u-root"}>
-              <option value="employee">Сотрудник</option><option value="admin">Админ</option>
+              <option value="employee">Сотрудник</option><option value="foreman">Старший смены</option><option value="admin">Админ</option>
               <option value="accountant">Бухгалтерия</option>
               {me?.role === "superadmin" && <option value="superadmin">Суперадмин</option>}
             </select>
           </Field>
           <Field label="Пароль" hint="Пусто = без пароля"><input className="input font-mono" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} /></Field>
+          {modal?.edit && (
+            <Field label="Табельный номер / пропуск" hint="Уникальный номер (5+ знаков), создаётся автоматически">
+              <div className="flex items-center gap-2">
+                <input className="input font-mono tnum" value={modal.edit.empNo || ""} readOnly />
+                <span className="badge bg-paper text-ink shrink-0">{makeBarcode(modal.edit.empNo || "")}</span>
+              </div>
+            </Field>
+          )}
+          {!modal?.edit && <p className="text-[11.5px] font-bold text-mute bg-paper border border-line rounded-lg p-3 self-end">Табельный номер будет присвоен автоматически: следующий свободный (5+ знаков), уникальность проверяется перед сохранением.</p>}
           <Field label="Цех">
             <select className="input" value={f.workshopId} onChange={(e) => setF({ ...f, workshopId: e.target.value })}>
               <option value="">Без цеха</option>
@@ -348,7 +433,60 @@ export function EmployeesView() {
       </Modal>
 
       {dossier && <DossierModal user={dossier} onClose={() => setDossier(null)} />}
+
+      {passFor && (
+        <Modal open onClose={() => setPassFor(null)} title={`QR-пропуск: ${passFor.name}`} w="max-w-sm"
+          foot={<>
+            <button className="btn btn-ghost" onClick={() => setPassFor(null)}>Закрыть</button>
+            <button className="btn btn-pri" onClick={() => printPass(passFor)}><I n="pdf" size={14} />Печать пропуска</button>
+          </>}>
+          <div className="text-center grid gap-3">
+            {passQr ? <img src={passQr} alt="QR" className="mx-auto w-52 h-52 rounded-xl border border-line" /> : <div className="h-52 grid place-items-center text-mute font-bold">…</div>}
+            <div>
+              <b className="font-display text-sm">{passFor.name}</b>
+              <p className="text-[12px] text-mute font-bold">{wsName(db, passFor.workshopId)} · таб. № <span className="font-mono">{passFor.empNo}</span></p>
+            </div>
+            <p className="text-[11.5px] text-mute font-bold leading-relaxed">Код считывается стандартным USB-сканером на терминале без сенсора: вход и выход одним сканированием. Содержит уникальный идентификатор — ошибки распознавания исключены.</p>
+          </div>
+        </Modal>
+      )}
+
+      {capture && <CaptureModal onClose={() => setCapture(false)} onShot={(src) => { setPhoto(src); setCapture(false); }} />}
     </div>
+  );
+}
+
+function CaptureModal({ onClose, onShot }: { onClose: () => void; onShot: (src: string) => void }) {
+  const vRef = useRef<HTMLVideoElement>(null);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    let stream: MediaStream | null = null;
+    (async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 960 }, facingMode: "user" }, audio: false });
+        if (vRef.current) { vRef.current.srcObject = stream; await vRef.current.play().catch(() => {}); }
+      } catch { setErr("Камера недоступна"); }
+    })();
+    return () => { stream?.getTracks().forEach((t) => t.stop()); };
+  }, []);
+  const shot = () => {
+    const v = vRef.current;
+    if (!v || !v.videoWidth) return;
+    const c = document.createElement("canvas");
+    const w = Math.min(480, v.videoWidth);
+    c.width = w; c.height = Math.round(w * (v.videoHeight / v.videoWidth));
+    c.getContext("2d")!.drawImage(v, 0, 0, c.width, c.height);
+    onShot(c.toDataURL("image/jpeg", 0.85));
+  };
+  return (
+    <Modal open onClose={onClose} title="Фото сотрудника (камера)" w="max-w-md"
+      foot={<>
+        <button className="btn btn-ghost" onClick={onClose}>Отмена</button>
+        <button className="btn btn-pri" onClick={shot} disabled={!!err}><I n="camera" size={14} />Снять фото</button>
+      </>}>
+      {err ? <p className="text-sm font-bold text-bad text-center py-6">{err}</p> : <video ref={vRef} playsInline muted className="w-full rounded-xl border border-line aspect-[4/3] object-cover" />}
+      <p className="text-[11.5px] font-bold text-mute mt-2 text-center">Лицо в анфас, хорошее освещение — нейросеть извлечёт биометрический вектор автоматически.</p>
+    </Modal>
   );
 }
 
