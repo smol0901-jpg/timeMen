@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { StoreProvider, useStore, myNotices, remindersFor } from "./lib/store";
-import { MODULES, ModuleId } from "./lib/types";
+import { MODULES, NAV_GROUPS, ModuleId } from "./lib/types";
 import { ToastProvider, I, Avatar, Logo, OnlineDot } from "./components/ui";
 import Login from "./components/Login";
 import Kiosk from "./components/Kiosk";
@@ -8,6 +8,7 @@ import { PunchView, StatsView, ScheduleView, RequestsView, ProfileView } from ".
 import { DashboardView, EmployeesView, ScheduleEditor } from "./screens/admin";
 import { RequestsAdmin, ReportsView, PermsView, DataIOView, AuditView, RemindersView, SettingsView, PayrollView, ArchiveView } from "./screens/admin2";
 import { FeedView, ChatView, GamesView, AIView, BotView, CameraView, OrgView, ProductionView, HelpView } from "./screens/misc";
+import LiveGamesView from "./screens/gameslive";
 import { relTime, todayKey } from "./lib/time";
 
 export default function App() {
@@ -46,12 +47,23 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { err
 }
 
 function Shell({ onKiosk }: { onKiosk: () => void }) {
-  const { db, me, can, logout, markNoticesRead } = useStore();
+  const { db, me, can, logout, markNoticesRead, toggleFavMod } = useStore();
   const [view, setView] = useState<ModuleId>("punch");
   const [wide, setWide] = useState(() => window.innerWidth >= 1024);
   const [bell, setBell] = useState(false);
   const [nav, setNav] = useState(false);
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    try { return new Set(JSON.parse(localStorage.getItem("smenalan.groups") || "[]")); } catch { return new Set(); }
+  });
   const [installEvt, setInstallEvt] = useState<(Event & { prompt?: () => void }) | null>(null);
+  const toggleGroup = (id: string) => {
+    setCollapsed((prev) => {
+      const n = new Set(prev);
+      n.has(id) ? n.delete(id) : n.add(id);
+      localStorage.setItem("smenalan.groups", JSON.stringify([...n]));
+      return n;
+    });
+  };
 
   useEffect(() => {
     const h = () => setWide(window.innerWidth >= 1024);
@@ -86,6 +98,7 @@ function Shell({ onKiosk }: { onKiosk: () => void }) {
       case "chat": return <ChatView />;
       case "production": return <ProductionView />;
       case "games": return <GamesView />;
+      case "live": return <LiveGamesView />;
       case "profile": return <ProfileView />;
       case "dashboard": return <DashboardView />;
       case "employees": return <EmployeesView />;
@@ -106,16 +119,28 @@ function Shell({ onKiosk }: { onKiosk: () => void }) {
     }
   })();
 
-  const userMods = allowed.filter((m) => m.group === "user");
-  const adminMods = allowed.filter((m) => m.group === "admin");
+  const favs = (me.favs || []).map((id) => MODULES.find((m) => m.id === id)).filter((m): m is (typeof MODULES)[number] => !!m && allowed.includes(m));
+  const grouped = NAV_GROUPS.map((g) => ({ ...g, mods: g.mods.map((id) => allowed.find((m) => m.id === id)).filter((m): m is (typeof MODULES)[number] => !!m) })).filter((g) => g.mods.length > 0);
+  const groupedIds = new Set(NAV_GROUPS.flatMap((g) => g.mods));
+  const rest = allowed.filter((m) => !groupedIds.has(m.id));
 
   const NavBtn = ({ m, horizontal }: { m: (typeof MODULES)[number]; horizontal?: boolean }) => (
-    <button onClick={() => go(m.id)}
-      className={`flex items-center gap-2.5 rounded-lg font-bold transition-all ${horizontal ? "flex-col gap-1 px-2 py-1.5 text-[9.5px] min-w-[56px]" : "px-3 h-10 text-[13px] w-full text-left"}
-      ${view === m.id ? (horizontal ? "text-accent" : "bg-accent text-white shadow-[0_3px_12px_-4px_rgba(229,111,36,0.7)]") : horizontal ? "text-steel-200" : "text-steel-200 hover:bg-steel-800 hover:text-paper"}`}>
-      <I n={m.icon} size={horizontal ? 18 : 16} />
-      <span className={horizontal ? "truncate max-w-[56px]" : "truncate"}>{m.label}</span>
-    </button>
+    <span className={`group/nb relative ${horizontal ? "" : "flex"}`}>
+      <button onClick={() => go(m.id)}
+        className={`flex items-center gap-2.5 rounded-lg font-bold transition-all ${horizontal ? "flex-col gap-1 px-2 py-1.5 text-[9.5px] min-w-[56px]" : "px-3 h-10 text-[13px] w-full text-left"}
+        ${view === m.id ? (horizontal ? "text-accent" : "bg-accent text-white shadow-[0_3px_12px_-4px_rgba(229,111,36,0.7)]") : horizontal ? "text-steel-200" : "text-steel-200 hover:bg-steel-800 hover:text-paper"}`}>
+        <I n={m.icon} size={horizontal ? 18 : 16} />
+        <span className={horizontal ? "truncate max-w-[56px]" : "truncate"}>{m.label}</span>
+      </button>
+      {!horizontal && (
+        <button title={(me.favs || []).includes(m.id) ? "Убрать из избранного" : "В избранное"}
+          onClick={() => toggleFavMod(m.id)}
+          className={`absolute right-1.5 top-1/2 -translate-y-1/2 w-6 h-6 rounded-md grid place-items-center transition
+          ${(me.favs || []).includes(m.id) ? "text-accent opacity-100" : "text-steel-400 opacity-0 group-hover/nb:opacity-100 hover:text-accent"}`}>
+          <I n="star" size={13} />
+        </button>
+      )}
+    </span>
   );
 
   return (
@@ -143,10 +168,22 @@ function Shell({ onKiosk }: { onKiosk: () => void }) {
             </div>
           </div>
           <nav className="flex-1 overflow-y-auto dark-scroll px-3 py-3 grid gap-0.5 content-start">
-            <span className="text-[9.5px] font-extrabold uppercase tracking-[0.16em] text-steel-400 px-3 pt-1 pb-2">Работа</span>
-            {userMods.map((m) => <NavBtn key={m.id} m={m} />)}
-            {adminMods.length > 0 && <span className="text-[9.5px] font-extrabold uppercase tracking-[0.16em] text-steel-400 px-3 pt-4 pb-2">Управление</span>}
-            {adminMods.map((m) => <NavBtn key={m.id} m={m} />)}
+            {favs.length > 0 && (
+              <>
+                <span className="text-[9.5px] font-extrabold uppercase tracking-[0.16em] text-accent px-3 pt-1 pb-2 flex items-center gap-1.5"><I n="star" size={11} />Избранное</span>
+                {favs.map((m) => <NavBtn key={"f" + m.id} m={m} />)}
+              </>
+            )}
+            {grouped.map((g) => (
+              <div key={g.id} className="mt-2">
+                <button onClick={() => toggleGroup(g.id)} className="w-full flex items-center gap-1.5 text-[9.5px] font-extrabold uppercase tracking-[0.16em] text-steel-400 px-3 pb-2 pt-1 hover:text-steel-200 transition">
+                  <I n={collapsed.has(g.id) ? "chevR" : "chevL"} size={10} />{g.label}
+                  <span className="ml-auto text-steel-600 normal-case tracking-normal">{g.mods.length}</span>
+                </button>
+                {!collapsed.has(g.id) && g.mods.map((m) => <NavBtn key={m.id} m={m} />)}
+              </div>
+            ))}
+            {rest.map((m) => <NavBtn key={m.id} m={m} />)}
           </nav>
           <div className="p-3 border-t border-steel-700 grid gap-2">
             <OnlineDot />
@@ -156,7 +193,7 @@ function Shell({ onKiosk }: { onKiosk: () => void }) {
               <Avatar u={me} size={34} />
               <div className="min-w-0 flex-1">
                 <b className="text-[12.5px] block truncate">{me.name}</b>
-                <span className="text-[10px] font-extrabold text-steel-400 uppercase">{me.role === "superadmin" ? "суперадмин" : me.role === "admin" ? "админ" : me.role === "accountant" ? "бухгалтерия" : "сотрудник"}</span>
+                <span className="text-[10px] font-extrabold text-steel-400 uppercase">{me.role === "superadmin" ? "суперадмин" : me.role === "admin" ? "админ" : me.role === "foreman" ? "старший смены" : me.role === "accountant" ? "бухгалтерия" : "сотрудник"}</span>
               </div>
               <button className="w-8 h-8 rounded-lg grid place-items-center text-steel-400 hover:text-bad hover:bg-steel-700 transition" onClick={logout} title="Выйти"><I n="logout" size={15} /></button>
             </div>
@@ -176,13 +213,14 @@ function Shell({ onKiosk }: { onKiosk: () => void }) {
         )}
 
         <main className="flex-1 overflow-y-auto p-4 sm:p-6">
+          <Announcement />
           <ErrorBoundary key={view}>{content}</ErrorBoundary>
         </main>
       </div>
 
       {!isDesktop && (
         <nav className="bg-steel-950 text-paper flex items-stretch justify-around px-1 pt-1.5 pb-[max(6px,env(safe-area-inset-bottom))] shrink-0 sticky bottom-0 z-40 border-t border-steel-700 overflow-x-auto dark-scroll">
-          {allowed.slice(0, 6).map((m) => <NavBtn key={m.id} m={m} horizontal />)}
+          {[...favs, ...allowed.filter((m) => !favs.includes(m))].slice(0, 6).map((m) => <NavBtn key={m.id} m={m} horizontal />)}
           {allowed.length > 6 && (
             <button onClick={() => setNav(true)} className={`flex flex-col items-center gap-1 px-2 py-1.5 text-[9.5px] font-bold min-w-[56px] ${nav ? "text-accent" : "text-steel-200"}`}>
               <I n="grid" size={18} />Ещё
@@ -210,6 +248,20 @@ function Shell({ onKiosk }: { onKiosk: () => void }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function Announcement() {
+  const { db } = useStore();
+  const [hidden, setHidden] = useState(() => sessionStorage.getItem("smenalan.ann") === "1");
+  const text = db.settings.announcement?.trim();
+  if (!text || hidden) return null;
+  return (
+    <div className="card !border-night/50 !bg-night-soft/60 px-4 py-3 mb-4 flex items-start gap-3 anim-rise">
+      <span className="w-8 h-8 rounded-lg bg-night text-white grid place-items-center shrink-0"><I n="info" size={15} /></span>
+      <p className="text-[13px] font-bold leading-relaxed flex-1">{text}</p>
+      <button className="w-7 h-7 rounded-md grid place-items-center text-mute hover:bg-surface transition shrink-0" onClick={() => { setHidden(true); sessionStorage.setItem("smenalan.ann", "1"); }}><I n="x" size={14} /></button>
     </div>
   );
 }

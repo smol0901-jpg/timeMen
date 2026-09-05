@@ -2,14 +2,16 @@ import React, { createContext, useContext, useEffect, useMemo, useRef, useState 
 import {
   DB, User, Device, ModuleId, Punch, ShiftCell, ShiftType, WorkRequest, RequestKind,
   Settings, PermMatrix, Role, Workshop, Position, Product, PayPeriod, Attachment, ScheduleEvent, PayMode,
+  LiveKind, LiveMove, LiveGame,
 } from "./types";
+import { applyMove, initBoard, KIND_LABEL_LIVE } from "./games";
 import { SHIFT_META, defaultPerms } from "./types";
 import {
   todayKey, nowMin, uid, rangeKeys, fmtMin, fmtDur, fmtDurH, fmtDateFull, addDaysKey, monthTitle,
   monthStart, monthEnd, daysInMonth, weekdayIdx,
 } from "./time";
 
-const DB_KEY = "smenalan.db.v7";
+const DB_KEY = "smenalan.db.v8";
 const SES_KEY = "smenalan.session.v3";
 const RECOVERY_CODE_B64 = "TkVVUkFMX0FSQ0hJVEVDVF9QUkVNSVVNKys=";
 
@@ -46,7 +48,7 @@ export function makeSeed(): DB {
     if (weekdayIdx(date) < 5) schedule.push({ userId: "u-demo", date, type: "day" });
   }
   return {
-    v: 7,
+    v: 8,
     users: [root, buh, demo],
     workshops: [
       { id: "w-1", name: "Цех №1 — линия", piecework: false, color: "#3f6d9e" },
@@ -98,28 +100,63 @@ export function makeSeed(): DB {
         lines: ["кто на смене", "неделя", "опоздания"],
       },
     ],
+    liveGames: [],
     settings: {
       orgName: "ООО «Продлайн»", orgInn: "ИНН 7701234567 · КПП 770101001", orgAddress: "г. Пролетарск, ул. Заводская, 14",
       dailyNorm: 8, breakMin: 45, overtimeK: 1.5, kioskFree: true, adminPin: "1234",
       aiMode: "std", ollamaOn: false, ollamaUrl: "http://localhost:11434", ollamaModel: "llama3", apiToken: "",
       kioskTheme: "steel", bestUserId: null, bestOn: true, camNote: "проверьте записи камер",
       camOn: true, camMirror: true, camFlash: true, camOnOut: false, camQuality: 0.7,
+      camBio: true, camAutoTune: true, camThreshold: 0.58,
       tgToken: "", tgChat: "", tgEvents: ["request", "schedule", "resolution"],
+      announcement: "",
     },
     perms: defaultPerms(),
   };
 }
 
+// ---------- авто-идентификаторы ----------
+const LAT: Record<string, string> = {
+  а: "a", б: "b", в: "v", г: "g", д: "d", е: "e", ё: "e", ж: "zh", з: "z", и: "i", й: "i", к: "k", л: "l",
+  м: "m", н: "n", о: "o", п: "p", р: "r", с: "s", т: "t", у: "u", ф: "f", х: "h", ц: "c", ч: "ch",
+  ш: "sh", щ: "sch", ъ: "", ы: "y", ь: "", э: "e", ю: "yu", я: "ya",
+};
+export function translit(s: string): string {
+  return s.toLowerCase().split("").map((c) => (LAT[c] !== undefined ? LAT[c] : c)).join("").replace(/[^a-z0-9]/g, "");
+}
+export function genEmpNo(db: DB): string {
+  const max = db.users.reduce((m, u) => Math.max(m, Number(u.empNo) || 10000), 10000);
+  return String(max + 1);
+}
+export function makeLogin(db: DB, name: string, workshopId: string | null): string {
+  const surname = translit((name.trim().split(/\s+/)[0] || "user")).slice(0, 7) || "user";
+  const wsIdx = workshopId ? Math.max(0, db.workshops.findIndex((w) => w.id === workshopId)) + 1 : 0;
+  const d = new Date();
+  const base = `${surname}${wsIdx ? "-c" + wsIdx : ""}-${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, "0")}`.slice(0, 15);
+  let login = base;
+  let i = 2;
+  while (db.users.some((x) => x.username.toLowerCase() === login.toLowerCase())) login = `${base}-${i++}`;
+  return login;
+}
+export function makeBarcode(empNo: string): string { return `SL1:${empNo}`; }
+
 function migrate(d: DB): DB {
   const seed = makeSeed();
-  const out: DB = { ...seed, ...d, v: 7 } as DB;
+  const out: DB = { ...seed, ...d, v: 8 } as DB;
   (["workshops", "positions", "punches", "schedule", "products", "production", "threads", "messages", "reminders",
     "events", "requests", "posts", "notices", "audit", "games", "scores", "challenges", "sensors", "fines",
     "ratings", "periods", "camshots", "scripts"] as const).forEach((k) => {
     if (!Array.isArray((out as never as Record<string, unknown>)[k])) (out as never as Record<string, unknown[]>)[k] = [];
   });
   out.settings = { ...seed.settings, ...(d.settings || {}) };
-  if (!d.perms || !d.perms.punch || !d.perms.punch.accountant) out.perms = defaultPerms();
+  if (!Array.isArray(out.liveGames)) out.liveGames = [];
+  // обратное заполнение новых полей пользователей
+  let nextNo = out.users.reduce((m, u) => Math.max(m, Number(u.empNo) || 10000), 10000);
+  out.users = out.users.map((u) => {
+    const empNo = u.empNo || String(++nextNo);
+    return { ...u, empNo, barcode: u.barcode || makeBarcode(empNo), favs: u.favs || [], notes: u.notes || "", faceEmbedding: u.faceEmbedding ?? null };
+  });
+  if (!d.perms || !d.perms.punch || !d.perms.punch.foreman) out.perms = defaultPerms();
   if (!out.users.some((u) => u.id === "u-root")) out.users.unshift(seed.users[0]);
   out.camshots = out.camshots.filter((c) => Date.now() - new Date(c.ts).getTime() < 120 * 86400000).slice(0, 1500);
   return out;
@@ -130,11 +167,11 @@ function loadDb(): DB {
     const raw = localStorage.getItem(DB_KEY);
     if (raw) {
       const d = JSON.parse(raw);
-      if (d && (d.v === 7 || d.v === 6 || d.v === 5) && Array.isArray(d.users) && d.users.some((u: User) => u.id === "u-root"))
+      if (d && (d.v === 8 || d.v === 7 || d.v === 6 || d.v === 5) && Array.isArray(d.users) && d.users.some((u: User) => u.id === "u-root"))
         return migrate(d as DB);
     }
   } catch { /* ignore */ }
-  return makeSeed();
+  return migrate(makeSeed());
 }
 
 // ---------- чистые расчёты ----------
@@ -255,7 +292,7 @@ interface StoreApi {
   logout: () => void;
   punch: (source: Punch["source"]) => "UNSCHEDULED" | string | null;
   punchOut: () => string | null;
-  kioskPunch: (userId: string) => { dir: "in" | "out"; punchId: string } | null;
+  kioskPunch: (userId: string, source?: "kiosk" | "scanner") => { dir: "in" | "out"; punchId: string } | null;
   setPunchTout: (punchId: string, tout: number, confirm: boolean) => void;
   confirmPunch: (punchId: string) => void;
   setPunchPlan: (punchId: string, plannedOut: number) => void;
@@ -322,7 +359,18 @@ interface StoreApi {
   botSay: (text: string) => string;
   runScript: (id: string) => string[];
   sendTelegram: (text: string) => Promise<boolean>;
-  serverHealth: () => Promise<{ ok: boolean; version?: number; uptime_sec?: number; port?: number; db_kb?: number; backups?: { name: string; size_kb: number }[] }>;
+  serverHealth: () => Promise<{ ok: boolean; version?: number; uptime_sec?: number; port?: number; db_kb?: number; backups?: { name: string; size_kb: number }[]; tunnel?: string | null; autostart?: boolean; wal?: boolean; priority?: boolean }>;
+  // избранное, биометрия, онлайн-игры, сервер
+  toggleFavMod: (mod: ModuleId) => void;
+  updateUserFace: (userId: string, emb: number[] | null, silent?: boolean) => void;
+  createLiveGame: (kind: LiveKind, toUserId: string | null) => string;
+  joinLiveGame: (id: string) => string | null;
+  liveMove: (id: string, move: Omit<LiveMove, "p">) => string | null;
+  resignLive: (id: string) => void;
+  serverRestart: () => Promise<boolean>;
+  serverAutostart: (on: boolean) => Promise<boolean>;
+  serverTunnel: () => Promise<{ url: string | null; available: boolean }>;
+  downloadFaceModels: () => Promise<boolean>;
 }
 
 const Ctx = createContext<StoreApi | null>(null);
@@ -354,7 +402,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       const r = await fetch("./api/db", { cache: "no-store" });
       if (!r.ok) return;
       const j = await r.json();
-      if (j && j.data && j.data.v === 7 && typeof j.version === "number" && !cancelled) {
+      if (j && j.data && j.data.v === 8 && typeof j.version === "number" && !cancelled) {
         verRef.current = j.version;
         dirtyRef.current = false;
         setDb(j.data as DB);
@@ -515,20 +563,23 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       });
       return null;
     },
-    kioskPunch(userId) {
+    kioskPunch(userId, source) {
       const u = userById(db, userId);
-      if (!u) return null;
+      if (!u || u.archived || !u.active) return null;
+      // направление определяется строго по этому сотруднику (защита от «чужой» смены)
       const open = openPunchOf(db, userId);
       const dir: "in" | "out" = open ? "out" : "in";
       const punchId = open ? open.id : uid();
+      const src = source || "kiosk";
       up((d) => {
-        if (open) {
-          const x = d.punches.find((q) => q.id === open.id)!;
-          x.tout = nowMin();
-          audit(d, "терминал", "Отметка", `${u.name} — конец смены (${fmtMin(nowMin())})`);
+        // атомарная перепроверка: у выбранного сотрудника может быть только одна открытая смена
+        const cur = d.punches.find((q) => q.userId === userId && q.tout === null);
+        if (cur) {
+          cur.tout = nowMin();
+          audit(d, src === "scanner" ? "сканер" : "терминал", "Отметка", `${u.name} — конец смены (${fmtMin(nowMin())})`);
         } else {
-          d.punches.push({ id: punchId, userId, date: todayKey(), tin: nowMin(), tout: null, source: "kiosk", auto: d.schedule.some((s) => s.userId === userId && s.date === todayKey() && (s.type === "day" || s.type === "night")) ? null : "unscheduled" });
-          audit(d, "терминал", "Отметка", `${u.name} — начало смены (${fmtMin(nowMin())})`);
+          d.punches.push({ id: punchId, userId, date: todayKey(), tin: nowMin(), tout: null, source: src, auto: d.schedule.some((s) => s.userId === userId && s.date === todayKey() && (s.type === "day" || s.type === "night")) ? null : "unscheduled" });
+          audit(d, src === "scanner" ? "сканер" : "терминал", "Отметка", `${u.name} — начало смены (${fmtMin(nowMin())})`);
         }
       });
       return { dir, punchId };
@@ -566,12 +617,21 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       });
     },
     addUser(u) {
-      if (!u.username.trim()) return "Укажите логин";
-      if (db.users.some((x) => x.username.toLowerCase() === u.username.trim().toLowerCase())) return "Логин уже занят";
       if (!u.name.trim()) return "Укажите ФИО";
+      // уникальность ФИО среди активных — иначе на терминале смена «открывается» нескольким под одним именем
+      const sameName = db.users.find((x) => !x.archived && x.name.trim().toLowerCase() === u.name.trim().toLowerCase());
+      if (sameName) return `Сотрудник с таким ФИО уже есть (${sameName.username}). Уточните имя, чтобы отметки были однозначными`;
+      const empNo = genEmpNo(db);
+      let username = u.username.trim();
+      if (!username) username = makeLogin(db, u.name, u.workshopId);
+      if (db.users.some((x) => x.username.toLowerCase() === username.toLowerCase())) return `Логин «${username}» уже занят — измените или оставьте пустым для автогенерации`;
+      const barcode = makeBarcode(empNo);
       up((d) => {
-        d.users.push({ ...u, username: u.username.trim(), name: u.name.trim(), avatar: u.avatar ?? null, active: true, createdAt: new Date().toISOString() } as User);
-        audit(d, who(), "Сотрудники", `Создан ${u.name} (${u.username}, ${u.role})`);
+        d.users.push({
+          ...u, id: uid(), username, name: u.name.trim(), avatar: u.avatar ?? null, active: true, createdAt: new Date().toISOString(),
+          empNo, barcode, favs: [] as ModuleId[], notes: "", faceEmbedding: null,
+        } as unknown as User);
+        audit(d, who(), "Сотрудники", `Создан ${u.name} (${username}, таб. № ${empNo}, ${u.role})`);
       });
       return null;
     },
@@ -939,6 +999,122 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       if (!me) return false;
       if (me.role === "superadmin") return true;
       return !!db.perms[mod]?.[me.role]?.[device];
+    },
+    toggleFavMod(mod) {
+      const me = meRef.current;
+      if (!me) return;
+      up((d) => {
+        const u = d.users.find((x) => x.id === me.id);
+        if (!u) return;
+        const favs = u.favs || [];
+        u.favs = favs.includes(mod) ? favs.filter((x) => x !== mod) : [...favs, mod];
+      });
+    },
+    updateUserFace(userId, emb, silent) {
+      up((d) => {
+        const u = d.users.find((x) => x.id === userId);
+        if (!u) return;
+        u.faceEmbedding = emb;
+        u.faceUpdatedAt = emb ? new Date().toISOString() : undefined;
+        if (!silent) audit(d, who(), "Биометрия", `${u.name}: ${emb ? "обновлён вектор лица (самообучение)" : "биометрия сброшена"}`);
+      });
+    },
+    createLiveGame(kind, toUserId) {
+      const me = meRef.current!;
+      const id = uid();
+      up((d) => {
+        d.liveGames = d.liveGames.filter((g) => g.status !== "done" || Date.now() - new Date(g.updatedAt).getTime() < 7 * 86400000);
+        d.liveGames.unshift({
+          id, kind, players: [me.id, toUserId], status: toUserId ? "waiting" : "waiting", turn: 0,
+          board: initBoard(kind), moves: [], winner: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+        });
+        if (toUserId) notify(d, toUserId, `${me.name} вызывает вас на дуэль: ${KIND_LABEL_LIVE[kind]}. Раздел «Онлайн-игры».`);
+        audit(d, me.name, "Игры", `Создана партия ${KIND_LABEL_LIVE[kind]}`);
+      });
+      return id;
+    },
+    joinLiveGame(id) {
+      const me = meRef.current!;
+      const g = db.liveGames.find((x) => x.id === id);
+      if (!g || g.status !== "waiting") return "Партия уже идёт или завершена";
+      if (g.players[1] && g.players[1] !== me.id && g.players[0] !== me.id) return "Соперник уже назначен";
+      up((d) => {
+        const x = d.liveGames.find((y) => y.id === id);
+        if (!x) return;
+        if (x.players[0] === me.id) { x.players = [me.id, null]; }
+        else x.players = [x.players[0], me.id];
+        x.status = "play";
+        x.updatedAt = new Date().toISOString();
+        notify(d, x.players[0], `Партия «${KIND_LABEL_LIVE[x.kind]}» началась — ваш ход ${x.players[0] === me.id ? "первым" : "вторым"}.`);
+        audit(d, me.name, "Игры", `Присоединился к партии ${KIND_LABEL_LIVE[x.kind]}`);
+      });
+      return null;
+    },
+    liveMove(id, move) {
+      const me = meRef.current!;
+      const g = db.liveGames.find((x) => x.id === id);
+      if (!g || g.status !== "play") return "Партия не активна";
+      const myIdx = g.players.indexOf(me.id);
+      if (myIdx !== g.turn) return "Сейчас ход соперника";
+      const res = applyMove(g.kind, g.board, { ...move, p: myIdx });
+      if (!res) return "Такой ход невозможен";
+      up((d) => {
+        const x = d.liveGames.find((y) => y.id === id);
+        if (!x) return;
+        x.board = res.board;
+        x.moves.push({ ...move, p: myIdx });
+        x.turn = x.turn === 0 ? 1 : 0;
+        x.updatedAt = new Date().toISOString();
+        if (res.done) {
+          x.status = "done";
+          x.winner = res.winnerIdx !== null ? x.players[res.winnerIdx] : null;
+          const wname = x.winner ? userById(d, x.winner)?.name : null;
+          audit(d, me.name, "Игры", `Партия ${KIND_LABEL_LIVE[x.kind]} завершена${wname ? `, победил ${wname}` : ", ничья"}`);
+          d.scores.unshift({ id: uid(), game: KIND_LABEL_LIVE[x.kind], userId: x.winner || me.id, score: 1, ts: new Date().toISOString() });
+          d.scores = d.scores.slice(0, 200);
+          x.players.forEach((pid) => { if (pid) notify(d, pid, `Партия «${KIND_LABEL_LIVE[x.kind]}» завершена: ${wname ? "победил " + wname : "ничья"}.`); });
+        }
+      });
+      return null;
+    },
+    resignLive(id) {
+      const me = meRef.current!;
+      up((d) => {
+        const x = d.liveGames.find((y) => y.id === id);
+        if (!x || x.status !== "play") return;
+        const myIdx = x.players.indexOf(me.id);
+        x.status = "done";
+        x.winner = x.players[myIdx === 0 ? 1 : 0] || null;
+        x.updatedAt = new Date().toISOString();
+        audit(d, me.name, "Игры", `Сдался в партии ${KIND_LABEL_LIVE[x.kind]}`);
+        x.players.forEach((pid) => { if (pid) notify(d, pid, `${me.name} завершил партию «${KIND_LABEL_LIVE[x.kind]}».`); });
+      });
+    },
+    async serverRestart() {
+      try {
+        const r = await fetch("./api/restart", { method: "POST", headers: { "Content-Type": "application/json", "X-API-Token": db.settings.apiToken || "" }, body: "{}" });
+        return r.ok;
+      } catch { return false; }
+    },
+    async serverAutostart(on) {
+      try {
+        const r = await fetch("./api/autostart", { method: "POST", headers: { "Content-Type": "application/json", "X-API-Token": db.settings.apiToken || "" }, body: JSON.stringify({ on }) });
+        return r.ok;
+      } catch { return false; }
+    },
+    async serverTunnel() {
+      try {
+        const r = await fetch("./api/tunnel", { cache: "no-store" });
+        if (!r.ok) return { url: null, available: false };
+        const j = await r.json();
+        return { url: j.url || null, available: !!j.available };
+      } catch { return { url: null, available: false }; }
+    },
+    async downloadFaceModels() {
+      try {
+        const r = await fetch("./api/models/download", { method: "POST", headers: { "Content-Type": "application/json", "X-API-Token": db.settings.apiToken || "" }, body: "{}" });
+        return r.ok;
+      } catch { return false; }
     },
     addFine(userId, amount, reason, periodId) {
       up((d) => {
