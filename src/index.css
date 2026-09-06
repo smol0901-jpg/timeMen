@@ -53,7 +53,7 @@ body { @apply bg-paper text-ink font-sans antialiased; }
 
   .input { @apply w-full h-10 px-3 rounded-lg border border-line bg-surface text-sm text-ink outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/25 placeholder:text-mute/60; }
   textarea.input { @apply h-auto py-2.5 leading-relaxed resize-none; }
-  select.input { @apply pr-8 appearance-none bg-no-repeat cursor-pointer; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%235d6a80' stroke-width='2.4' stroke-linecap='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); background-position: right 10px center; }
+  select.input { @apply pr-8 appearance-none bg-no-repeat cursor-pointer; background-image: url("image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%235d6a80' stroke-width='2.4' stroke-linecap='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); background-position: right 10px center; }
 
   .card { @apply bg-surface border border-line rounded-xl shadow-[0_1px_3px_rgba(20,24,31,0.06)]; }
   .lbl { @apply block text-[11px] font-extrabold uppercase tracking-[0.09em] text-mute mb-1.5; }
@@ -80,6 +80,6 @@ body { @apply bg-paper text-ink font-sans antialiased; }
 .pulse-ok { animation: pulseDot 1.6s ease-out infinite; }
 @keyframes blink { 50% { opacity: 0.25; } }
 .blink { animation: blink 1s steps(1) infinite; }
-@keyframes flashFade { 0% { opacity: 0; } 12% { opacity: 1; } 80% { opacity: 1; } 100% { opacity: 0; } }
-.anim-flash { animation: flashFade 1.6s ease both; }
 .dark-scroll::-webkit-scrollbar-thumb { background: #39435a; border: 2px solid transparent; background-clip: content-box; }
+@keyframes scanline { 0% { top: 4%; } 50% { top: 92%; } 100% { top: 4%; } }
+.scanline { animation: scanline 2.4s ease-in-out infinite; }

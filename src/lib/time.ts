@@ -66,3 +66,8 @@ export function fileSize(b: number): string {
   if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} КБ`;
   return `${(b / 1024 / 1024).toFixed(2)} МБ`;
 }
+// Транслитерация для авто-логинов
+const TR: Record<string, string> = { а: "a", б: "b", в: "v", г: "g", д: "d", е: "e", ё: "e", ж: "zh", з: "z", и: "i", й: "y", к: "k", л: "l", м: "m", н: "n", о: "o", п: "p", р: "r", с: "s", т: "t", у: "u", ф: "f", х: "h", ц: "c", ч: "ch", ш: "sh", щ: "sch", ъ: "", ы: "y", ь: "", э: "e", ю: "yu", я: "ya" };
+export function translit(s: string): string {
+  return s.toLowerCase().split("").map((c) => TR[c] ?? c).join("").replace(/[^a-z0-9]/g, "");
+}
