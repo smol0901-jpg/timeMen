@@ -244,6 +244,15 @@ export function Field({ label, hint, children }: { label: string; hint?: string;
   );
 }
 
+export function CopyBtn({ text, label }: { text: string; label?: string }) {
+  const { toast } = useToast();
+  return (
+    <button className="btn btn-ghost btn-sm" onClick={() => { navigator.clipboard?.writeText(text).catch(() => {}); toast("Скопировано в буфер", "ok"); }}>
+      <I n="copy" size={13} />{label || "Копировать"}
+    </button>
+  );
+}
+
 export function Toggle({ checked, onChange, label, sub }: { checked: boolean; onChange: (v: boolean) => void; label: string; sub?: string }) {
   return (
     <label className="flex items-center gap-3 cursor-pointer select-none">

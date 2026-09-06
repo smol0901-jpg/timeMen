@@ -45,7 +45,11 @@ function page(title: string, sub: string, s: Settings, tableHtml: string, footNo
 </body></html>`;
 }
 
-export function printPayrollReport(db: DB, rows: SumRow[], periodLabel: string) {
+export function printPayrollReport(a: DB | SumRow[], b: SumRow[] | string, c: string | Settings) {
+  const isDb = !Array.isArray(a);
+  const db = (isDb ? a : { settings: c as Settings, workshops: [] }) as unknown as DB;
+  const rows = (isDb ? b : a) as SumRow[];
+  const periodLabel = (isDb ? c : b) as string;
   const s = db.settings;
   const tot = rows.reduce((t, r) => ({ p: t.p + r.planMin, f: t.f + r.factMin, o: t.o + r.otMin, m: t.m + r.net }), { p: 0, f: 0, o: 0, m: 0 });
   const table = `<table><thead><tr><th>№</th><th>ФИО</th><th>Цех</th><th>План, ч</th><th>Факт, ч</th><th>Перераб., ч</th><th>Опозд.</th><th>Смен</th><th>К выплате, ₽</th></tr></thead><tbody>

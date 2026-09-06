@@ -124,6 +124,34 @@ export async function parseScheduleFile(file: File, monthKey: string): Promise<{
   return out;
 }
 
+export function productsTemplate() {
+  const ws = XLSX.utils.aoa_to_sheet([
+    ["name", "unit", "price", "workshop"],
+    ["Филе", "кг", 180, "Мясной цех — обвалка птицы"],
+    ["Крыло", "кг", 95, "Мясной цех — обвалка птицы"],
+    ["Каркас", "кг", 25, ""],
+  ]);
+  ws["!cols"] = [{ wch: 28 }, { wch: 8 }, { wch: 10 }, { wch: 30 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Продукция");
+  XLSX.writeFile(wb, "shablon_produkcii.xlsx");
+}
+
+export async function parseProductsFile(file: File): Promise<{ name: string; unit: string; price: number; workshop?: string }[]> {
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: "array" });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws);
+  return rows
+    .map((r) => ({
+      name: String(r.name || r["Название"] || r["Позиция"] || "").trim(),
+      unit: String(r.unit || r["Ед."] || "кг").trim() || "кг",
+      price: Number(r.price || r["Цена"] || 0) || 0,
+      workshop: String(r.workshop || r["Цех"] || "").trim(),
+    }))
+    .filter((r) => r.name);
+}
+
 export async function parseEmployeesFile(file: File): Promise<Partial<{ username: string; name: string; rate: number }>[]> {
   const buf = await file.arrayBuffer();
   const wb = XLSX.read(buf, { type: "array" });
