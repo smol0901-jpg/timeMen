@@ -15,7 +15,7 @@ BACKUPS = DATA / "backups"
 DBF = DATA / "smenalan.sqlite"
 LOGF = BASE / "server.log"
 SETTINGS_F = DATA / "server_settings.json"
-DB_VERSION = 7
+DB_VERSION = 8
 CAM_KEEP_DAYS = 120
 START = time.time()
 
