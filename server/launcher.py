@@ -157,11 +157,11 @@ def local_ips():
     except OSError:
         pass
     try:
-        for _, _, addrs in socket.gethostbyname_ex(socket.gethostname())[2:]:
-            for a in addrs:
-                if a not in ips and not a.startswith("127."):
-                    ips.append(a)
-    except OSError:
+        _, _, ipaddrlist = socket.gethostbyname_ex(socket.gethostname())
+        for a in ipaddrlist:
+            if a not in ips and not a.startswith("127."):
+                ips.append(a)
+    except (OSError, ValueError):
         pass
     return ips or ["127.0.0.1"]
 

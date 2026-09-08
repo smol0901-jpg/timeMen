@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
 import { useStore, openPunchOf, wsName } from "../lib/store";
 import { KioskTheme } from "../lib/types";
-import { FaceCheck, faceReady, blendEmbedding } from "../lib/face";
+import { FaceCheck, faceReady, blendEmbedding } from "../lib/face.tsx";
 import { Avatar, I, Logo, Modal, OnlineDot, useNow } from "./ui";
 import { fmtClock, fmtMin, nowMin, MONTHS, WD_FULL, todayKey } from "../lib/time";
 
