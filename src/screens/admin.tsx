@@ -8,7 +8,7 @@ import {
 import { I, Avatar, useToast, Modal, Field, Empty, Seg, RoleBadge, StatTile, Tabs, Confirm } from "../components/ui";
 import { exportScheduleMonth, scheduleTemplate, parseScheduleFile, parseEmployeesFile } from "../lib/excel";
 import { DossierModal, FinePanel, RatingPanel } from "./admin2";
-import { embeddingFromFile, faceReady } from "../lib/face";
+import { embeddingFromFile, faceReady } from "../lib/face.tsx";
 import { genEmpNo, makeLogin, makeBarcode } from "../lib/store";
 import QRCode from "qrcode";
 
