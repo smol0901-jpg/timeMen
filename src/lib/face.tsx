@@ -87,7 +87,7 @@ export async function embeddingFromFile(src: string): Promise<number[] | null> {
 export interface SmartCam { stream: MediaStream; stop: () => void; quality: string; }
 
 /** Автоподбор разрешения, непрерывный фокус/экспозиция/баланс белого. */
-export async function openSmartCamera(video: HTMLVideoElement, mirror: boolean): Promise<SmartCam | null> {
+export async function openSmartCamera(video: HTMLVideoElement, mirror: boolean, retryCount = 0): Promise<SmartCam | null> {
   const ladder: [number, number][] = [[1920, 1080], [1280, 720], [960, 540], [640, 480]];
   for (const [w, h] of ladder) {
     try {
@@ -113,7 +113,19 @@ export async function openSmartCamera(video: HTMLVideoElement, mirror: boolean):
       }
       const s = track?.getSettings?.();
       return { stream, stop: () => stream.getTracks().forEach((t) => t.stop()), quality: `${s?.width || w}×${s?.height || h}` };
-    } catch { /* пробуем ниже */ }
+    } catch (err) {
+      // Если это ошибка разрешения и есть попытки — повторяем
+      if (retryCount < 3 && err instanceof Error && err.name === "NotAllowedError") {
+        await new Promise((r) => setTimeout(r, 1000));
+        return openSmartCamera(video, mirror, retryCount + 1);
+      }
+      /* пробуем ниже */
+    }
+  }
+  // Если все разрешения не сработали и есть попытки — пробуем ещё раз
+  if (retryCount < 3) {
+    await new Promise((r) => setTimeout(r, 1000));
+    return openSmartCamera(video, mirror, retryCount + 1);
   }
   return null;
 }

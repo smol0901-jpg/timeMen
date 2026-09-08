@@ -28,7 +28,7 @@ export default function Kiosk({ onExit }: { onExit: () => void }) {
   const [faceAvail, setFaceAvail] = useState<boolean | null>(null);
   const scanBuf = useRef({ text: "", last: 0 });
 
-  const theme = THEMES[db.settings.kioskTheme || "steel"] || THEMES.steel;
+  const theme = THEMES[(db.settings.kioskTheme || "steel") as KioskTheme] || THEMES.steel;
   const emps = db.users.filter((u) => u.active && !u.archived);
   const free = db.settings.kioskFree;
   const url = typeof window !== "undefined" ? window.location.href.split("#")[0] : "";

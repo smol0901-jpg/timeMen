@@ -181,6 +181,47 @@ def find_port(prefer):
 SETTINGS = load_settings()
 PORT = find_port(int(SETTINGS.get("port", 8080)))
 
+# ---- журнал каждого запроса/настройки (кольцо на 300 записей) ----
+REQ_LOG = []
+REQ_LOCK = threading.Lock()
+
+
+def reqlog(method, path, note=""):
+    with REQ_LOCK:
+        REQ_LOG.insert(0, {"ts": datetime.datetime.now().isoformat(timespec="seconds"),
+                           "method": method, "path": path, "note": note})
+        del REQ_LOG[300:]
+    log(f"{method} {path}" + (f" · {note}" if note else ""))
+
+
+# ---- готовые шаблоны подключений (заполните по инструкции) ----
+TEMPLATES = {
+    "telegram": {
+        "_ИНСТРУКЦИЯ": "BotFather → /newbot → токен; бот в канал админом; chat_id через @userinfobot. Вставить в Настройки → Telegram.",
+        "bot_token": "ЗАМЕНИТЕ_НА_ТОКЕН_ОТ_BOTFATHER", "chat_id": "ЗАМЕНИТЕ_НА_CHAT_ID",
+        "triggers": ["request", "schedule", "resolution", "camera"], "server_endpoint": "POST /api/telegram {text}"},
+    "ollama": {
+        "_ИНСТРУКЦИЯ": "ollama.com/download → ollama pull llama3 → ollama serve. В Настройках → ИИ и нейросеть.",
+        "url": "http://localhost:11434", "model": "llama3", "lightweight_models": ["qwen2.5:1.5b", "gemma2:2b", "phi3.5:3.8b"]},
+    "sensors": {
+        "_ИНСТРУКЦИЯ": "POST с любого устройства сети; токен из Настроек (пусто = открыто в LAN).",
+        "method": "POST", "url": "http://АДРЕС_СЕРВЕРА:8080/api/sensors",
+        "headers": {"Content-Type": "application/json", "X-API-Token": "ВАШ_ТОКЕН"},
+        "body": {"name": "temp_myasnoy", "value": 4.2, "unit": "°C"},
+        "пример_curl": "curl -X POST http://192.168.1.10:8080/api/sensors -H \"Content-Type: application/json\" -d '{\"name\":\"temp\",\"value\":4.2,\"unit\":\"°C\"}'"},
+    "ipcamera": {
+        "_ИНСТРУКЦИЯ": "RTSP-адрес камеры в Настройки → IP-камеры; для захвата кадров сервером нужен ffmpeg (winget install ffmpeg).",
+        "cameras": [{"name": "Вход", "url": "rtsp://admin:ПАРОЛЬ@192.168.1.64:554/stream1", "workshop": None}],
+        "snapshot_command": "ffmpeg -rtsp_transport tcp -i \"<url>\" -frames:v 1 -q:v 5 server/data/files/cam_<имя>.jpg"},
+    "webhook": {
+        "_ИНСТРУКЦИЯ": "база http://АДРЕС_СЕРВЕРА:8080; чтение без токена в LAN, запись с X-API-Token.",
+        "read": ["GET /api/today", "GET /api/employees", "GET /api/punches?date=2025-01-20", "GET /api/db"],
+        "write": ["POST /api/sensors", "POST /api/files", "POST /api/telegram", "POST /api/backup"]},
+    "tunnel": {
+        "_ИНСТРУКЦИЯ": "winget install cloudflare.cloudflared → cloudflared tunnel --url http://localhost:8080 → адрес в Настройки → Туннель.",
+        "quick_command": "cloudflared tunnel --url http://localhost:8080", "service_install": "cloudflared service install"},
+}
+
 MIME = {".html": "text/html; charset=utf-8", ".js": "application/javascript", ".css": "text/css",
         ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
         ".webmanifest": "application/manifest+json", ".json": "application/json", ".ico": "image/x-icon",
@@ -250,9 +291,27 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?")[0]
+        reqlog("GET", path)
         try:
             if path == "/api/ping":
                 return self._send(200, {"ok": True, "app": "СменаЛАН"})
+            if path == "/api/configlog":
+                with REQ_LOCK:
+                    snapshot = list(REQ_LOG)
+                return self._send(200, {"log": snapshot,
+                                        "server_settings": {"port": PORT, "autostart": bool(SETTINGS.get("autostart")),
+                                                            "token_set": bool(SETTINGS.get("token")),
+                                                            "data_dir": str(DATA)}})
+            if path.startswith("/api/templates"):
+                name = path.rsplit("/", 1)[-1]
+                if name in TEMPLATES:
+                    return self._send(200, TEMPLATES[name])
+                return self._send(200, {"templates": list(TEMPLATES.keys())})
+            if path == "/api/tunnel":
+                _, d = get_db()
+                s = (d or {}).get("settings", {})
+                return self._send(200, {"on": bool(s.get("tunnelOn")), "url": s.get("tunnelUrl") or "",
+                                        "lan": [f"http://{ip}:{PORT}" for ip in local_ips()]})
             if path == "/api/state":
                 return self._send(200, {"version": get_state()})
             if path == "/api/db":
@@ -339,6 +398,27 @@ class H(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         try:
             body = self._body()
+            reqlog("POST", path)
+            if path == "/api/restart":
+                if not self._token_ok():
+                    return self._send(403, {"error": "token required"})
+                log("Перезапуск сервера по запросу API…")
+                import subprocess as _sp
+                _sp.Popen([sys.executable, str(BASE / "launcher.py"), "--console"],
+                          creationflags=getattr(_sp, "DETACHED_PROCESS", 0) | getattr(_sp, "CREATE_NEW_PROCESS_GROUP", 0),
+                          close_fds=True, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+                self._send(200, {"ok": True, "msg": "перезапускаюсь"})
+                time.sleep(1)
+                os._exit(0)
+            if path == "/api/autostart":
+                if not self._token_ok():
+                    return self._send(403, {"error": "token required"})
+                on = bool(body.get("on", True))
+                SETTINGS["autostart"] = on
+                save_settings(SETTINGS)
+                set_autostart(on)
+                reqlog("POST", "/api/autostart", f"autostart={'on' if on else 'off'}")
+                return self._send(200, {"ok": True, "autostart": on})
             if path == "/api/db":
                 if not isinstance(body.get("data"), dict) or body["data"].get("v") != DB_VERSION:
                     return self._send(400, {"error": f"bad db version (need v={DB_VERSION})"})
@@ -547,6 +627,45 @@ def tray_loop():
     icon.run()
 
 
+def check_environment():
+    """Автопроверка окружения и подсказки."""
+    issues = []
+    
+    # Проверка Python
+    try:
+        import sys
+        if sys.version_info < (3, 8):
+            issues.append("Python 3.8+ рекомендуется")
+    except Exception:
+        issues.append("Python не определён")
+    
+    # Проверка зависимостей
+    try:
+        import pystray
+        import PIL
+        import qrcode
+    except ImportError as e:
+        issues.append(f"Зависимости: {e}")
+    
+    # Проверка портов
+    try:
+        s = socket.socket()
+        s.bind(("0.0.0.0", PORT))
+        s.close()
+    except OSError:
+        issues.append(f"Порт {PORT} занят")
+    
+    # Проверка dist
+    if not DIST.exists():
+        issues.append("Папка dist не найдена — запустите npm run build")
+    
+    if issues:
+        log("Предупреждения: " + "; ".join(issues))
+        print("\nВНИМАНИЕ:")
+        for issue in issues:
+            print(f"  • {issue}")
+        print()
+
 def set_autostart(on: bool):
     try:
         if sys.platform != "win32":
@@ -568,6 +687,7 @@ def set_autostart(on: bool):
 
 def main():
     console = "--console" in sys.argv
+    no_console = "--no-console" in sys.argv
     if "--port" in sys.argv:
         try:
             SETTINGS["port"] = int(sys.argv[sys.argv.index("--port") + 1])
@@ -575,6 +695,10 @@ def main():
             pass
     global PORT
     PORT = find_port(int(SETTINGS.get("port", 8080)))
+    
+    # Автопроверка и подсказки
+    if not console and not no_console:
+        check_environment()
 
     if not console and sys.platform == "win32":
         # одиночный экземпляр

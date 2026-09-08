@@ -6,6 +6,7 @@ import {
 } from "../lib/time";
 import { I, Avatar, useToast, Tabs, Field, Empty, Seg, Confirm, Toggle } from "../components/ui";
 import { exportAttendance, exportPayroll, exportEmployees, exportProduction, exportFot } from "../lib/excel";
+import { CameraTemplatesCard, ApiTemplatesCard, ConfigLogCard } from "../components/conn";
 import { printPayrollReport, printAttendanceReport, printProductionReport } from "../lib/report";
 import { ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend, CartesianGrid } from "recharts";
 
@@ -539,6 +540,11 @@ export function DataIOView() {
 
   return (
     <div className="grid lg:grid-cols-2 gap-4 items-start max-w-5xl">
+      <div className="lg:col-span-2 grid gap-4">
+        <CameraTemplatesCard />
+        <ApiTemplatesCard />
+        <ConfigLogCard />
+      </div>
       <div className="card p-5">
         <h3 className="font-display text-sm font-semibold mb-3 flex items-center gap-2"><I n="zap" size={16} />Автоконтроль сервера</h3>
         <div className={`rounded-xl border p-4 ${diag?.ok ? "border-ok/50 bg-ok-soft/50" : "border-bad/50 bg-bad-soft/50"}`}>
@@ -800,7 +806,23 @@ export function SettingsView() {
           {online && <p className="text-[12px] font-bold text-mute mt-1.5">Адрес для сотрудников: <code className="bg-surface border border-line px-1.5 py-0.5 rounded font-mono">{window.location.protocol}//{window.location.host}</code></p>}
         </div>
         <Field label="API-токен" hint="Для датчиков, веб-камеры и резервных копий"><input className="input font-mono" value={s.apiToken} onChange={(e) => ch("apiToken", e.target.value)} placeholder="sensor-2025" /></Field>
-        <p className="text-[11px] font-bold text-mute mt-2">Эндпоинты — «Инструкции и API». Тема киоска меняется на самом терминале (5 оформлений) или здесь:</p>
+        <div className="mt-4 grid gap-3">
+          <Toggle checked={!!s.autostart} onChange={async (v) => {
+            ch("autostart", v);
+            try { await fetch("./api/autostart", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on: v }) }); } catch { /* офлайн */ }
+            toast(v ? "Автозапуск с ОС включён" : "Автозапуск с ОС отключён", "ok");
+          }} label="Автозапуск сервера вместе с Windows" sub="отключается здесь же, без реестра и ярлыков" />
+          <Toggle checked={!!s.tunnelOn} onChange={(v) => ch("tunnelOn", v)} label="Туннель (мобильный интернет)" sub="доступ из дома/с телефона вне Wi-Fi предприятия · шаблон — в «Данные и сервер»" />
+          {s.tunnelOn && <Field label="Публичный адрес туннеля" hint="cloudflared tunnel --url http://localhost:8080 → вставьте полученный https://…trycloudflare.com"><input className="input font-mono !text-[12px]" value={s.tunnelUrl || ""} onChange={(e) => ch("tunnelUrl", e.target.value)} placeholder="https://smena-abc.trycloudflare.com" /></Field>}
+          <button className="btn btn-ghost btn-sm self-start" onClick={async () => {
+            try {
+              const r = await fetch("./api/restart", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+              toast(r.ok ? "Сервер перезапускается — страница обновится через 5 секунд" : "Нужен API-токен в заголовке (см. шаблон webhook)", r.ok ? "ok" : "bad");
+              if (r.ok) setTimeout(() => window.location.reload(), 5000);
+            } catch { toast("Сервер недоступен", "bad"); }
+          }}><I n="history" size={13} />Перезапустить сервер (без выключения ПК)</button>
+        </div>
+        <p className="text-[11px] font-bold text-mute mt-4">Эндпоинты — «Инструкции и API». Тема киоска меняется на самом терминале (5 оформлений) или здесь:</p>
         <div className="flex gap-2 flex-wrap mt-2">
           {([["steel", "Сталь", "#0e1116", "#e56f24"], ["mint", "Мята", "#0b1f1a", "#34d399"], ["sunset", "Закат", "#221208", "#f59e0b"], ["ocean", "Океан", "#091525", "#38bdf8"], ["light", "Светлая", "#e9edf1", "#e56f24"]] as const).map(([k, n, bgc, acc]) => (
             <button key={k} onClick={() => ch("kioskTheme", k)} className={`flex items-center gap-2 rounded-xl border-2 px-3 py-2 font-bold text-[12px] transition active:scale-95 ${s.kioskTheme === k ? "!border-ink" : "border-line hover:border-steel-400"}`}>
