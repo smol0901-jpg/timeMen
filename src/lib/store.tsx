@@ -2,9 +2,10 @@ import React, { createContext, useContext, useEffect, useMemo, useRef, useState 
 import {
   DB, User, Device, ModuleId, Punch, ShiftCell, ShiftType, WorkRequest, RequestKind,
   Settings, PermMatrix, Role, Workshop, Position, Product, PayPeriod, Attachment, ScheduleEvent, PayMode,
-  LiveKind, LiveMove, LiveGame,
+  LiveKind, LiveMove, LiveGame, CronJob, AILevel,
 } from "./types";
 import { applyMove, initBoard, KIND_LABEL_LIVE } from "./games";
+import { executeCronJob, analyzeAll, generateBotReport, calculateAIMove } from "./ai";
 import { SHIFT_META, defaultPerms } from "./types";
 import {
   todayKey, nowMin, uid, rangeKeys, fmtMin, fmtDur, fmtDurH, fmtDateFull, addDaysKey, monthTitle,
@@ -92,6 +93,17 @@ export function makeSeed(): DB {
     sensors: [],
     fines: [],
     ratings: [],
+    cronJobs: [
+      { id: uid(), name: "Анализ смен (утро)", kind: "analyze_shifts", enabled: true, interval: 1440, lastRun: null, nextRun: null, params: {}, createdBy: "u-root", createdAt: iso(now), runCount: 0 },
+      { id: uid(), name: "Анализ фото (вечер)", kind: "analyze_photos", enabled: true, interval: 1440, lastRun: null, nextRun: null, params: {}, createdBy: "u-root", createdAt: iso(now), runCount: 0 },
+      { id: uid(), name: "Проверка опозданий", kind: "check_punctuality", enabled: true, interval: 60, lastRun: null, nextRun: null, params: {}, createdBy: "u-root", createdAt: iso(now), runCount: 0 },
+    ],
+    botBrain: { version: 1, learningRate: 0.01, photoAnalysisCount: 0, shiftAnalysisCount: 0, hourAnalysisCount: 0, productionAnalysisCount: 0, lastTraining: null, confidence: 0, patterns: [] },
+    gameAI: [
+      { id: uid(), name: "Крестики-нолики ИИ", kind: "ttt", level: "medium", wins: 0, losses: 0, draws: 0, learningData: [], createdAt: iso(now) },
+      { id: uid(), name: "Шашки ИИ", kind: "checkers", level: "medium", wins: 0, losses: 0, draws: 0, learningData: [], createdAt: iso(now) },
+      { id: uid(), name: "Шахматы ИИ", kind: "chess", level: "easy", wins: 0, losses: 0, draws: 0, learningData: [], createdAt: iso(now) },
+    ],
     periods: [],
     camshots: [],
     scripts: [
@@ -150,6 +162,9 @@ function migrate(d: DB): DB {
   });
   out.settings = { ...seed.settings, ...(d.settings || {}) };
   if (!Array.isArray(out.liveGames)) out.liveGames = [];
+  if (!Array.isArray(out.cronJobs)) out.cronJobs = seed.cronJobs;
+  if (!out.botBrain) out.botBrain = seed.botBrain;
+  if (!Array.isArray(out.gameAI)) out.gameAI = seed.gameAI;
   // обратное заполнение новых полей пользователей
   let nextNo = out.users.reduce((m, u) => Math.max(m, Number(u.empNo) || 10000), 10000);
   out.users = out.users.map((u) => {
@@ -371,6 +386,17 @@ interface StoreApi {
   serverAutostart: (on: boolean) => Promise<boolean>;
   serverTunnel: () => Promise<{ url: string | null; available: boolean }>;
   downloadFaceModels: () => Promise<boolean>;
+  // Крон-задачи и ИИ-бот
+  addCronJob: (name: string, kind: CronJob["kind"], interval: number, params?: Record<string, unknown>) => string;
+  updateCronJob: (id: string, patch: Partial<CronJob>) => void;
+  removeCronJob: (id: string) => void;
+  runCronJobNow: (id: string) => Promise<string>;
+  trainBotBrain: () => Promise<string>;
+  getBotBrainReport: () => string;
+  // Игры с ИИ
+  createAIGame: (kind: LiveKind, level: AILevel) => string;
+  makeAIMove: (gameId: string) => string | null;
+  learnFromGame: (gameId: string, winner: "human" | "ai" | "draw") => void;
 }
 
 const Ctx = createContext<StoreApi | null>(null);
@@ -1115,6 +1141,123 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         const r = await fetch("./api/models/download", { method: "POST", headers: { "Content-Type": "application/json", "X-API-Token": db.settings.apiToken || "" }, body: "{}" });
         return r.ok;
       } catch { return false; }
+    },
+    // Крон-задачи и ИИ-бот
+    addCronJob(name, kind, interval, params = {}) {
+      const me = meRef.current;
+      if (!me) return "";
+      const id = uid();
+      up((d) => {
+        d.cronJobs.unshift({ id, name, kind, enabled: true, interval, lastRun: null, nextRun: null, params, createdBy: me.id, createdAt: new Date().toISOString(), runCount: 0 });
+        audit(d, me.name, "Крон", `Создана задача «${name}» (${kind}, каждые ${interval} мин)`);
+      });
+      return id;
+    },
+    updateCronJob(id, patch) {
+      up((d) => {
+        const j = d.cronJobs.find((x) => x.id === id);
+        if (j) Object.assign(j, patch);
+      });
+    },
+    removeCronJob(id) {
+      up((d) => {
+        d.cronJobs = d.cronJobs.filter((x) => x.id !== id);
+        audit(d, who(), "Крон", "Задача удалена");
+      });
+    },
+    async runCronJobNow(id) {
+      const job = db.cronJobs.find((x) => x.id === id);
+      if (!job) return "Задача не найдена";
+      const me = meRef.current;
+      const result = await executeCronJob(db, job);
+      up((d) => {
+        const j = d.cronJobs.find((x) => x.id === id);
+        if (j) {
+          j.lastRun = new Date().toISOString();
+          j.runCount++;
+          j.lastResult = result;
+        }
+        if (me) audit(d, me.name, "Крон", `Запущена вручную «${job.name}»: ${result.slice(0, 100)}`);
+      });
+      return result;
+    },
+    async trainBotBrain() {
+      const me = meRef.current;
+      if (!me) return "Нет сессии";
+      const report = await analyzeAll(db);
+      up((d) => {
+        d.botBrain.lastTraining = new Date().toISOString();
+        d.botBrain.confidence = Math.min(100, d.botBrain.confidence + 5);
+        d.botBrain.photoAnalysisCount = db.camshots.length;
+        d.botBrain.shiftAnalysisCount = db.punches.length;
+        d.botBrain.hourAnalysisCount = db.punches.reduce((s, p) => s + (p.tout ? (p.tout - p.tin) : 0), 0);
+        d.botBrain.productionAnalysisCount = db.production.length;
+        audit(d, me.name, "ИИ", `Обучение завершено: ${report.slice(0, 100)}`);
+      });
+      return report;
+    },
+    getBotBrainReport() {
+      return generateBotReport(db);
+    },
+    // Игры с ИИ
+    createAIGame(kind, level) {
+      const me = meRef.current;
+      if (!me) return "";
+      const id = uid();
+      up((d) => {
+        d.liveGames.unshift({
+          id, kind, players: [me.id, "ai"], status: "play", turn: 0, board: initBoard(kind),
+          moves: [], winner: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+          aiLevel: level,
+        });
+        audit(d, me.name, "Игры", `Создана партия с ИИ (${kind}, ${level})`);
+      });
+      return id;
+    },
+    makeAIMove(gameId) {
+      const game = db.liveGames.find((x) => x.id === gameId);
+      if (!game || game.status !== "play") return "Игра не найдена или завершена";
+      const aiLevel = (game as any).aiLevel || "medium";
+      const move = calculateAIMove(game.kind, game.board, 1, aiLevel, db.gameAI.find((a) => a.kind === game.kind));
+      if (!move) return "ИИ не может сделать ход";
+      up((d) => {
+        const g = d.liveGames.find((x) => x.id === gameId);
+        if (g) {
+          const result = applyMove(g.kind, g.board, { ...move, p: 1 });
+          if (result) {
+            g.board = result.board;
+            g.moves.push({ ...move, p: 1 });
+            g.turn = 0;
+            g.updatedAt = new Date().toISOString();
+            if (result.done) {
+              g.status = "done";
+              g.winner = result.winnerIdx !== null ? g.players[result.winnerIdx] : null;
+            }
+          }
+        }
+      });
+      return null;
+    },
+    learnFromGame(gameId, winner) {
+      const game = db.liveGames.find((x) => x.id === gameId);
+      if (!game) return;
+      up((d) => {
+        const ai = d.gameAI.find((a) => a.kind === game.kind);
+        if (ai) {
+          if (winner === "ai") ai.wins++;
+          else if (winner === "human") ai.losses++;
+          else ai.draws++;
+          // Самообучение: сохраняем лучшие ходы
+          if (winner === "ai" && game.moves.length > 0) {
+            const aiMoves = game.moves.filter((m) => m.p === 1);
+            aiMoves.forEach((m) => {
+              ai.learningData.push({ board: game.board, bestMove: m.to, score: 1 });
+            });
+            // Ограничиваем размер данных
+            if (ai.learningData.length > 1000) ai.learningData = ai.learningData.slice(-1000);
+          }
+        }
+      });
     },
     addFine(userId, amount, reason, periodId) {
       up((d) => {

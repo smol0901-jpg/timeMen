@@ -5,7 +5,7 @@ export type PayMode = "hour" | "shift" | "piece";
 export type ModuleId =
   | "punch" | "stats" | "schedule" | "requests" | "production" | "feed" | "chat" | "games" | "gameslive" | "profile" | "help"
   | "dashboard" | "employees" | "org" | "reports" | "payroll" | "camera" | "reminders" | "archive"
-  | "ai" | "bot" | "dataio" | "settings" | "permissions" | "audit";
+  | "ai" | "bot" | "ai-dept" | "ai-games" | "dataio" | "settings" | "permissions" | "audit";
 
 export interface PersonalInfo {
   phone?: string; email?: string; birth?: string; address?: string; emergency?: string; hiredAt?: string; docNote?: string;
@@ -97,6 +97,44 @@ export interface SensorPoint { id: string; name: string; value: number; unit: st
 export interface BotScript { id: string; name: string; enabled: boolean; ts: string; lines: string[] }
 export interface GameLink { id: string; name: string; url: string }
 
+// ---------- Крон-задачи и ИИ-бот ----------
+export type CronKind = "analyze_shifts" | "analyze_photos" | "check_schedule" | "check_punctuality" | "analyze_production" | "analyze_hours" | "custom";
+export interface CronJob {
+  id: string; name: string; kind: CronKind; enabled: boolean;
+  interval: number; // минуты между запусками
+  lastRun: string | null; nextRun: string | null;
+  params: Record<string, unknown>;
+  createdBy: string; createdAt: string;
+  runCount: number; lastResult?: string;
+}
+export interface BotBrain {
+  version: number;
+  learningRate: number;
+  photoAnalysisCount: number;
+  shiftAnalysisCount: number;
+  hourAnalysisCount: number;
+  productionAnalysisCount: number;
+  lastTraining: string | null;
+  confidence: number; // 0-100
+  patterns: { pattern: string; frequency: number; lastSeen: string }[];
+}
+
+// ---------- ИИ в играх ----------
+export type AILevel = "easy" | "medium" | "hard" | "adaptive";
+export interface GameAI {
+  id: string; name: string; kind: LiveKind; level: AILevel;
+  wins: number; losses: number; draws: number;
+  learningData: { board: string; bestMove: number; score: number }[];
+  createdAt: string;
+}
+
+// ---------- Статус PWA ----------
+export interface PwaStatus {
+  installed: boolean; serverOnline: boolean; lastCheck: string;
+  issues: { code: string; msg: string; fix: string }[];
+  version: string; canUpdate: boolean;
+}
+
 // Онлайн-игры в реальном времени
 export type LiveKind = "ttt" | "checkers" | "chess";
 export interface LiveMove { p: number; from: number; to: number; cap?: number }
@@ -104,6 +142,7 @@ export interface LiveGame {
   id: string; kind: LiveKind; players: [string, string | null];
   status: "wait" | "waiting" | "play" | "done"; turn: number; board: string;
   moves: LiveMove[]; winner: string | null; createdAt: string; updatedAt: string;
+  aiLevel?: AILevel;
 }
 
 export interface IpCamera { id: string; name: string; url: string; workshopId: string | null }
@@ -140,6 +179,7 @@ export interface DB {
   fines: Fine[]; ratings: Rating[]; periods: PayPeriod[]; camshots: CamShot[]; threads: Thread[]; messages: Message[];
   reminders: Reminder[]; scores: Score[]; challenges: Challenge[]; sensors: SensorPoint[]; scripts: BotScript[];
   games: GameLink[]; liveGames: LiveGame[]; apiLog?: ApiLogEntry[];
+  cronJobs: CronJob[]; botBrain: BotBrain; gameAI: GameAI[];
 }
 
 export const ROLE_LABEL: Record<Role, string> = {
@@ -178,6 +218,8 @@ export const MODULES: { id: ModuleId; label: string; icon: string; group: string
   { id: "archive", label: "Архив", icon: "layers", group: "Управление" },
   { id: "ai", label: "ИИ-аналитик", icon: "brain", group: "Интеллект" },
   { id: "bot", label: "ИИ-бот и скрипты", icon: "bot", group: "Интеллект" },
+  { id: "ai-dept", label: "Отдел ИИ", icon: "brain", group: "Интеллект" },
+  { id: "ai-games", label: "Игры с ИИ", icon: "game", group: "Интеллект" },
   { id: "dataio", label: "Данные и сервер", icon: "xls", group: "Система" },
   { id: "settings", label: "Настройки", icon: "gear", group: "Система" },
   { id: "permissions", label: "Права доступа", icon: "shield", group: "Система" },
@@ -234,7 +276,7 @@ export function defaultPerms(): PermMatrix {
   const empMods: ModuleId[] = ["punch", "stats", "schedule", "requests", "production", "feed", "chat", "games", "gameslive", "profile", "help"];
   const foreMods: ModuleId[] = [...empMods, "dashboard", "camera", "reminders"];
   const accMods: ModuleId[] = ["stats", "schedule", "feed", "chat", "games", "gameslive", "profile", "help", "reports", "payroll", "ai"];
-  const adminMods: ModuleId[] = [...empMods, "dashboard", "employees", "org", "reports", "payroll", "camera", "reminders", "archive", "ai", "bot", "dataio", "settings"];
+  const adminMods: ModuleId[] = [...empMods, "dashboard", "employees", "org", "reports", "payroll", "camera", "reminders", "archive", "ai", "bot", "ai-dept", "ai-games", "dataio", "settings"];
   const out = {} as PermMatrix;
   for (const m of MODULES.map((x) => x.id)) {
     out[m] = {} as PermMatrix[ModuleId];

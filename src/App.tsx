@@ -12,6 +12,8 @@ import { FeedView, ChatView, CameraView, BotView } from "./screens/misc";
 import GamesView from "./screens/games";
 import LiveGamesView from "./screens/gameslive";
 import AIView from "./screens/ai";
+import AIDepartmentView from "./screens/ai-dept";
+import AIGamesView from "./screens/ai-games";
 import OrgView from "./screens/org";
 import ProductionView from "./screens/production";
 import PayrollView from "./screens/payroll";
@@ -123,6 +125,8 @@ function Shell({ onKiosk }: { onKiosk: () => void }) {
       case "archive": return <ArchiveView />;
       case "ai": return <AIView />;
       case "bot": return <BotView />;
+      case "ai-dept": return <AIDepartmentView />;
+      case "ai-games": return <AIGamesView />;
       case "dataio": return <DataIOView />;
       case "settings": return <SettingsView />;
       case "permissions": return <PermsView />;

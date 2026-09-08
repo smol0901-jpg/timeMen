@@ -627,6 +627,45 @@ def tray_loop():
     icon.run()
 
 
+def check_environment():
+    """Автопроверка окружения и подсказки."""
+    issues = []
+    
+    # Проверка Python
+    try:
+        import sys
+        if sys.version_info < (3, 8):
+            issues.append("Python 3.8+ рекомендуется")
+    except Exception:
+        issues.append("Python не определён")
+    
+    # Проверка зависимостей
+    try:
+        import pystray
+        import PIL
+        import qrcode
+    except ImportError as e:
+        issues.append(f"Зависимости: {e}")
+    
+    # Проверка портов
+    try:
+        s = socket.socket()
+        s.bind(("0.0.0.0", PORT))
+        s.close()
+    except OSError:
+        issues.append(f"Порт {PORT} занят")
+    
+    # Проверка dist
+    if not DIST.exists():
+        issues.append("Папка dist не найдена — запустите npm run build")
+    
+    if issues:
+        log("Предупреждения: " + "; ".join(issues))
+        print("\nВНИМАНИЕ:")
+        for issue in issues:
+            print(f"  • {issue}")
+        print()
+
 def set_autostart(on: bool):
     try:
         if sys.platform != "win32":
@@ -648,6 +687,7 @@ def set_autostart(on: bool):
 
 def main():
     console = "--console" in sys.argv
+    no_console = "--no-console" in sys.argv
     if "--port" in sys.argv:
         try:
             SETTINGS["port"] = int(sys.argv[sys.argv.index("--port") + 1])
@@ -655,6 +695,10 @@ def main():
             pass
     global PORT
     PORT = find_port(int(SETTINGS.get("port", 8080)))
+    
+    # Автопроверка и подсказки
+    if not console and not no_console:
+        check_environment()
 
     if not console and sys.platform == "win32":
         # одиночный экземпляр

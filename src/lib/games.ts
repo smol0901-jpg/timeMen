@@ -52,7 +52,7 @@ export function applyMove(kind: LiveKind, board: string, mv: LiveMove): MoveResu
   const isWhite = piece === piece.toUpperCase();
   if (isWhite !== white) return null;
   const target = board[mv.to];
-  if (target !== "." && target.toUpperCase() === target.toUpperCase() && ((target === target.toUpperCase()) === white)) return null;
+  if (target !== "." && (target === target.toUpperCase()) === isWhite) return null;
   if (!chessLegal(board, mv.from, mv.to, piece)) return null;
   let moved = piece;
   if (piece.toLowerCase() === "p") {
