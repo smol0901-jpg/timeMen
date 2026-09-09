@@ -70,7 +70,7 @@ function Shell() {
       case "orders": return <OrdersView />;
       case "server-monitor": return <ServerMonitor />;
       case "security": return <SecurityView />;
-      default: return <div className="card p-6">Модуль в разработке</div>;
+      default: return <PunchView />;
     }
   };
   
