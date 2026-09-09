@@ -1,6 +1,6 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { StoreProvider, useStore } from "./lib/store";
-import { ToastProvider, I, Logo, Avatar, OnlineDot } from "./components/ui";
+import { ToastProvider, I, Logo, Avatar, OnlineDot, Modal } from "./components/ui";
 import { MODULES, ModuleId, NAV_GROUPS } from "./lib/types";
 import Login from "./components/Login";
 import Kiosk from "./components/Kiosk";
@@ -46,6 +46,30 @@ function Shell() {
   const { me, logout } = useStore();
   const [view, setView] = useState<ModuleId>("punch");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [customizeBottom, setCustomizeBottom] = useState(false);
+  
+  // Избранное (часто используемые) - слева в сайдбаре
+  const [favorites, setFavorites] = useState<ModuleId[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("smenalan.favorites") || '["punch","schedule","feed"]');
+    } catch { return ["punch", "schedule", "feed"]; }
+  });
+  
+  // Нижняя панель (настраиваемая) - максимум 5 модулей
+  const [bottomBar, setBottomBar] = useState<ModuleId[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("smenalan.bottomBar") || '["punch","stats","schedule","feed","profile"]');
+    } catch { return ["punch", "stats", "schedule", "feed", "profile"]; }
+  });
+  
+  // Сохранение в localStorage
+  useEffect(() => {
+    localStorage.setItem("smenalan.favorites", JSON.stringify(favorites));
+  }, [favorites]);
+  
+  useEffect(() => {
+    localStorage.setItem("smenalan.bottomBar", JSON.stringify(bottomBar));
+  }, [bottomBar]);
   
   if (!me) return null;
   
@@ -56,11 +80,35 @@ function Shell() {
         return m.group !== "Система" || ["dataio", "settings", "audit", "server-monitor", "security"].includes(m.id);
       }
       if (me.role === "accountant") {
-        return ["punch", "stats", "schedule", "requests", "production", "feed", "chat", "games", "profile", "help", "support", "payroll", "reports"].includes(m.id);
+        return ["punch", "stats", "schedule", "requests", "production", "feed", "chat", "games", "profile", "help", "support", "reports"].includes(m.id);
       }
       return m.group === "Работа" || m.group === "Общение" || m.group === "Личное";
     });
   }, [me.role]);
+  
+  const favoriteModules = allowed.filter((m) => favorites.includes(m.id));
+  const bottomBarModules = bottomBar.map((id) => allowed.find((m) => m.id === id)).filter(Boolean) as typeof MODULES;
+  
+  const toggleFavorite = (id: ModuleId) => {
+    setFavorites((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+  };
+  
+  const addToBottomBar = (id: ModuleId) => {
+    if (bottomBar.length >= 5) return;
+    if (bottomBar.includes(id)) return;
+    setBottomBar([...bottomBar, id]);
+  };
+  
+  const removeFromBottomBar = (id: ModuleId) => {
+    setBottomBar(bottomBar.filter((x) => x !== id));
+  };
+  
+  const moveBottomBar = (from: number, to: number) => {
+    const newBar = [...bottomBar];
+    const [item] = newBar.splice(from, 1);
+    newBar.splice(to, 0, item);
+    setBottomBar(newBar);
+  };
   
   const currentModule = MODULES.find((m) => m.id === view);
   
@@ -141,8 +189,43 @@ function Shell() {
       
       <div className="flex-1 flex min-h-0">
         {/* Sidebar - Desktop */}
-        <aside className="hidden lg:flex w-64 bg-white/60 backdrop-blur-xl border-r border-line/50 flex-col shrink-0 overflow-hidden">
+        <aside className="hidden lg:flex w-72 bg-white/60 backdrop-blur-xl border-r border-line/50 flex-col shrink-0 overflow-hidden">
           <nav className="flex-1 overflow-y-auto p-3 space-y-4">
+            {/* Избранное */}
+            {favoriteModules.length > 0 && (
+              <div>
+                <div className="flex items-center gap-2 px-3 mb-2">
+                  <I n="star" size={14} className="text-accent" />
+                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-accent-deep">Избранное</span>
+                </div>
+                <div className="space-y-0.5">
+                  {favoriteModules.map((m) => (
+                    <div key={m.id} className="flex items-center gap-1">
+                      <button
+                        onClick={() => setView(m.id)}
+                        className={`flex-1 flex items-center gap-2.5 px-3 py-2 rounded-xl text-[13px] font-bold transition-all duration-200 ${
+                          view === m.id 
+                            ? "bg-gradient-to-r from-accent to-accent-deep text-white shadow-lg shadow-accent/30 scale-[1.02]" 
+                            : "text-steel-700 hover:bg-paper/80 hover:scale-[1.01]"
+                        }`}
+                      >
+                        <I n={m.icon} size={18} />
+                        <span className="truncate">{m.label}</span>
+                      </button>
+                      <button
+                        onClick={() => toggleFavorite(m.id)}
+                        className="w-8 h-8 rounded-lg grid place-items-center text-accent hover:bg-accent-soft transition"
+                        title="Убрать из избранного"
+                      >
+                        <I n="star" size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            
+            {/* Все модули по группам */}
             {NAV_GROUPS.map((group) => {
               const mods = allowed.filter((m) => m.group === group);
               if (mods.length === 0) return null;
@@ -152,20 +235,33 @@ function Shell() {
                     {group}
                   </div>
                   <div className="space-y-0.5">
-                    {mods.map((m) => (
-                      <button
-                        key={m.id}
-                        onClick={() => setView(m.id)}
-                        className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-[13px] font-bold transition-all duration-200 ${
-                          view === m.id 
-                            ? "bg-gradient-to-r from-accent to-accent-deep text-white shadow-lg shadow-accent/30 scale-[1.02]" 
-                            : "text-steel-700 hover:bg-paper/80 hover:scale-[1.01]"
-                        }`}
-                      >
-                        <I n={m.icon} size={18} />
-                        <span className="truncate">{m.label}</span>
-                      </button>
-                    ))}
+                    {mods.map((m) => {
+                      const isFav = favorites.includes(m.id);
+                      return (
+                        <div key={m.id} className="flex items-center gap-1">
+                          <button
+                            onClick={() => setView(m.id)}
+                            className={`flex-1 flex items-center gap-2.5 px-3 py-2 rounded-xl text-[13px] font-bold transition-all duration-200 ${
+                              view === m.id 
+                                ? "bg-gradient-to-r from-accent to-accent-deep text-white shadow-lg shadow-accent/30 scale-[1.02]" 
+                                : "text-steel-700 hover:bg-paper/80 hover:scale-[1.01]"
+                            }`}
+                          >
+                            <I n={m.icon} size={18} />
+                            <span className="truncate">{m.label}</span>
+                          </button>
+                          <button
+                            onClick={() => toggleFavorite(m.id)}
+                            className={`w-8 h-8 rounded-lg grid place-items-center transition ${
+                              isFav ? "text-accent hover:bg-accent-soft" : "text-steel-300 hover:text-accent hover:bg-accent-soft/50"
+                            }`}
+                            title={isFav ? "Убрать из избранного" : "Добавить в избранное"}
+                          >
+                            <I n="star" size={14} />
+                          </button>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               );
@@ -195,6 +291,33 @@ function Shell() {
                 </button>
               </div>
               <nav className="p-3 space-y-4">
+                {/* Избранное */}
+                {favoriteModules.length > 0 && (
+                  <div>
+                    <div className="flex items-center gap-2 px-3 mb-2">
+                      <I n="star" size={14} className="text-accent" />
+                      <span className="text-[10px] font-extrabold uppercase tracking-wider text-accent-deep">Избранное</span>
+                    </div>
+                    <div className="space-y-0.5">
+                      {favoriteModules.map((m) => (
+                        <button
+                          key={m.id}
+                          onClick={() => { setView(m.id); setMobileMenuOpen(false); }}
+                          className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] font-bold transition-all ${
+                            view === m.id 
+                              ? "bg-gradient-to-r from-accent to-accent-deep text-white shadow-lg" 
+                              : "text-steel-700 hover:bg-paper/80"
+                          }`}
+                        >
+                          <I n={m.icon} size={18} />
+                          <span className="truncate">{m.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                
+                {/* Все модули */}
                 {NAV_GROUPS.map((group) => {
                   const mods = allowed.filter((m) => m.group === group);
                   if (mods.length === 0) return null;
@@ -228,16 +351,16 @@ function Shell() {
         )}
         
         {/* Main content */}
-        <main className="flex-1 overflow-y-auto p-4 lg:p-6">
+        <main className="flex-1 overflow-y-auto p-4 lg:p-6 pb-24 lg:pb-6">
           <div className="max-w-7xl mx-auto">
             <Content />
           </div>
         </main>
       </div>
       
-      {/* Mobile bottom nav */}
-      <nav className="lg:hidden bg-white/80 backdrop-blur-xl border-t border-line/50 flex items-stretch justify-around px-1 py-2 shrink-0 shadow-lg z-30">
-        {allowed.slice(0, 5).map((m) => (
+      {/* Mobile bottom nav - настраиваемая */}
+      <nav className="lg:hidden bg-white/90 backdrop-blur-xl border-t border-line/50 flex items-stretch justify-around px-1 py-2 shrink-0 shadow-lg z-30">
+        {bottomBarModules.map((m) => (
           <button
             key={m.id}
             onClick={() => setView(m.id)}
@@ -249,7 +372,75 @@ function Shell() {
             <span className="text-[9px] font-bold truncate max-w-[56px]">{m.label.split(" ")[0]}</span>
           </button>
         ))}
+        <button
+          onClick={() => setCustomizeBottom(true)}
+          className="flex flex-col items-center gap-1 px-2 py-1.5 rounded-xl text-steel-400 hover:text-accent transition-all"
+          title="Настроить нижнюю панель"
+        >
+          <I n="gear" size={20} />
+          <span className="text-[9px] font-bold">Настроить</span>
+        </button>
       </nav>
+      
+      {/* Модальное окно настройки нижней панели */}
+      <Modal open={customizeBottom} onClose={() => setCustomizeBottom(false)} title="Настройка нижней панели" w="max-w-2xl">
+        <div className="grid gap-4">
+          <div>
+            <b className="text-[13px] block mb-2">Текущая нижняя панель ({bottomBar.length}/5)</b>
+            {bottomBar.length === 0 ? (
+              <p className="text-[12px] text-mute font-bold text-center py-4">Нижняя панель пуста. Добавьте модули ниже.</p>
+            ) : (
+              <div className="grid gap-2">
+                {bottomBar.map((id, i) => {
+                  const m = allowed.find((x) => x.id === id);
+                  if (!m) return null;
+                  return (
+                    <div key={id} className="flex items-center gap-2 border border-line rounded-xl px-3 py-2 bg-paper/50">
+                      <I n={m.icon} size={18} className="text-accent" />
+                      <span className="flex-1 text-[13px] font-bold">{m.label}</span>
+                      {i > 0 && (
+                        <button className="w-8 h-8 rounded-lg grid place-items-center text-mute hover:bg-paper transition" onClick={() => moveBottomBar(i, i - 1)}>
+                          <I n="chevL" size={14} />
+                        </button>
+                      )}
+                      {i < bottomBar.length - 1 && (
+                        <button className="w-8 h-8 rounded-lg grid place-items-center text-mute hover:bg-paper transition" onClick={() => moveBottomBar(i, i + 1)}>
+                          <I n="chevR" size={14} />
+                        </button>
+                      )}
+                      <button className="w-8 h-8 rounded-lg grid place-items-center text-bad hover:bg-bad-soft transition" onClick={() => removeFromBottomBar(id)}>
+                        <I n="x" size={14} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          
+          <div>
+            <b className="text-[13px] block mb-2">Добавить модуль</b>
+            <div className="grid gap-2 max-h-60 overflow-y-auto">
+              {allowed.filter((m) => !bottomBar.includes(m.id)).map((m) => (
+                <button
+                  key={m.id}
+                  onClick={() => addToBottomBar(m.id)}
+                  disabled={bottomBar.length >= 5}
+                  className="flex items-center gap-2 border border-line rounded-xl px-3 py-2 hover:border-accent hover:bg-accent-soft/50 transition text-left disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <I n={m.icon} size={18} className="text-mute" />
+                  <span className="flex-1 text-[13px] font-bold">{m.label}</span>
+                  <I n="plus" size={14} className="text-accent" />
+                </button>
+              ))}
+            </div>
+          </div>
+          
+          <p className="text-[11px] text-mute font-bold text-center">
+            Максимум 5 модулей в нижней панели. Перетаскивайте для изменения порядка.
+          </p>
+        </div>
+      </Modal>
     </div>
   );
 }
