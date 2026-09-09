@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from "react";
 import { StoreProvider, useStore } from "./lib/store";
 import { ToastProvider, I, Logo, Avatar, OnlineDot, Modal } from "./components/ui";
 import { MODULES, ModuleId, NAV_GROUPS } from "./lib/types";
+import { ContextMenu, getQuickActions } from "./components/ContextMenu";
 import Login from "./components/Login";
 import Kiosk from "./components/Kiosk";
 import { PunchView, StatsView, ScheduleView, RequestsView, ProfileView } from "./screens/employee";
@@ -47,6 +48,7 @@ function Shell() {
   const [view, setView] = useState<ModuleId>("punch");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [customizeBottom, setCustomizeBottom] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   
   // Избранное (часто используемые) - слева в сайдбаре
   const [favorites, setFavorites] = useState<ModuleId[]>(() => {
@@ -112,6 +114,23 @@ function Shell() {
   
   const currentModule = MODULES.find((m) => m.id === view);
   
+  // Обработчик правой кнопки мыши
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY });
+  };
+  
+  // Быстрые действия для текущей вкладки
+  const quickActions = useMemo(() => {
+    return getQuickActions(view, {
+      onRefresh: () => window.location.reload(),
+      onSettings: () => setView("settings"),
+      onNew: () => {},
+      onExport: () => {},
+      onHelp: () => setView("help"),
+    });
+  }, [view]);
+  
   const Content = () => {
     switch (view) {
       case "punch": return <PunchView />;
@@ -149,7 +168,7 @@ function Shell() {
   };
   
   return (
-    <div className="h-full flex flex-col bg-gradient-to-br from-paper via-paper to-[#e8ecf1]">
+    <div className="h-full flex flex-col bg-gradient-to-br from-paper via-paper to-[#e8ecf1]" onContextMenu={handleContextMenu}>
       {/* Header */}
       <header className="h-16 bg-white/80 backdrop-blur-xl border-b border-line/50 flex items-center gap-3 px-4 lg:px-6 shrink-0 shadow-sm z-30">
         <Logo size={36} />
@@ -214,10 +233,10 @@ function Shell() {
                       </button>
                       <button
                         onClick={() => toggleFavorite(m.id)}
-                        className="w-8 h-8 rounded-lg grid place-items-center text-accent hover:bg-accent-soft transition"
+                        className="w-9 h-9 rounded-lg grid place-items-center text-accent bg-accent-soft hover:bg-accent-soft/80 transition shadow-sm"
                         title="Убрать из избранного"
                       >
-                        <I n="star" size={14} />
+                        <I n="star" size={16} />
                       </button>
                     </div>
                   ))}
@@ -252,12 +271,14 @@ function Shell() {
                           </button>
                           <button
                             onClick={() => toggleFavorite(m.id)}
-                            className={`w-8 h-8 rounded-lg grid place-items-center transition ${
-                              isFav ? "text-accent hover:bg-accent-soft" : "text-steel-300 hover:text-accent hover:bg-accent-soft/50"
+                            className={`w-9 h-9 rounded-lg grid place-items-center transition shadow-sm ${
+                              isFav 
+                                ? "text-accent bg-accent-soft hover:bg-accent-soft/80" 
+                                : "text-steel-400 bg-paper/50 hover:text-accent hover:bg-accent-soft/50"
                             }`}
-                            title={isFav ? "Убрать из избранного" : "Добавить в избранное"}
+                            title={isFav ? "⭐ Убрать из избранного" : "☆ Добавить в избранное"}
                           >
-                            <I n="star" size={14} />
+                            <I n="star" size={16} />
                           </button>
                         </div>
                       );
@@ -441,6 +462,16 @@ function Shell() {
           </p>
         </div>
       </Modal>
+      
+      {/* Контекстное меню правой кнопки мыши */}
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          actions={quickActions}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
     </div>
   );
 }
