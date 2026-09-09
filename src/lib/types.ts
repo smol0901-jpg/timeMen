@@ -5,7 +5,8 @@ export type PayMode = "hour" | "shift" | "piece";
 export type ModuleId =
   | "punch" | "stats" | "schedule" | "requests" | "production" | "feed" | "chat" | "games" | "gameslive" | "profile" | "help"
   | "dashboard" | "employees" | "org" | "reports" | "payroll" | "camera" | "reminders" | "archive"
-  | "ai" | "bot" | "ai-dept" | "ai-games" | "dataio" | "settings" | "permissions" | "audit";
+  | "ai" | "bot" | "ai-dept" | "ai-games" | "dataio" | "settings" | "permissions" | "audit"
+  | "support" | "orders" | "server-monitor" | "security";
 
 export interface PersonalInfo {
   phone?: string; email?: string; birth?: string; address?: string; emergency?: string; hiredAt?: string; docNote?: string;
@@ -224,6 +225,10 @@ export const MODULES: { id: ModuleId; label: string; icon: string; group: string
   { id: "settings", label: "Настройки", icon: "gear", group: "Система" },
   { id: "permissions", label: "Права доступа", icon: "shield", group: "Система" },
   { id: "audit", label: "Журналы", icon: "history", group: "Система" },
+  { id: "support", label: "Поддержка", icon: "help", group: "Личное" },
+  { id: "orders", label: "Заказы", icon: "box", group: "Управление" },
+  { id: "server-monitor", label: "Мониторинг сервера", icon: "zap", group: "Система" },
+  { id: "security", label: "Безопасность", icon: "shield", group: "Система" },
 ];
 
 export const NAV_GROUPS = ["Работа", "Общение", "Личное", "Управление", "Интеллект", "Система"];
@@ -276,7 +281,8 @@ export function defaultPerms(): PermMatrix {
   const empMods: ModuleId[] = ["punch", "stats", "schedule", "requests", "production", "feed", "chat", "games", "gameslive", "profile", "help"];
   const foreMods: ModuleId[] = [...empMods, "dashboard", "camera", "reminders"];
   const accMods: ModuleId[] = ["stats", "schedule", "feed", "chat", "games", "gameslive", "profile", "help", "reports", "payroll", "ai"];
-  const adminMods: ModuleId[] = [...empMods, "dashboard", "employees", "org", "reports", "payroll", "camera", "reminders", "archive", "ai", "bot", "ai-dept", "ai-games", "dataio", "settings"];
+  const adminMods: ModuleId[] = [...empMods, "dashboard", "employees", "org", "reports", "payroll", "camera", "reminders", "archive", "ai", "bot", "ai-dept", "ai-games", "dataio", "settings", "orders", "server-monitor"];
+  const superMods: ModuleId[] = ["permissions", "audit", "security"];
   const out = {} as PermMatrix;
   for (const m of MODULES.map((x) => x.id)) {
     out[m] = {} as PermMatrix[ModuleId];
