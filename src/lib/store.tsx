@@ -8,8 +8,8 @@ import { applyMove, initBoard, KIND_LABEL_LIVE } from "./games";
 import { executeCronJob, analyzeAll, generateBotReport, calculateAIMove } from "./ai";
 import { SHIFT_META, defaultPerms } from "./types";
 import {
-  todayKey, nowMin, uid, rangeKeys, fmtMin, fmtDur, fmtDurH, fmtDateFull, addDaysKey, monthTitle,
-  monthStart, monthEnd, daysInMonth, weekdayIdx,
+  todayKey, nowMin, uid, rangeKeys, fmtMin, fmtDur, fmtDurH, fmtDateFull, fmtDate, addDaysKey, monthTitle,
+  monthStart, monthEnd, daysInMonth, weekdayIdx, mondayKey,
 } from "./time";
 
 const DB_KEY = "smenalan.db.v8";
@@ -1367,8 +1367,10 @@ function botCommand(
   pushTg: (d: DB, key: string, text: string) => void,
   actor: string,
 ): string {
-  const low = text.toLowerCase();
-  const parts = text.split(/\s+/);
+  // Убираем символы маркеров (•, -, *, etc.) из начала
+  const cleanText = text.replace(/^[\s•\-\*]+/, "").trim();
+  const low = cleanText.toLowerCase();
+  const parts = cleanText.split(/\s+/);
   const cmd = (parts[0] || "").toLowerCase();
   const byLogin = (l: string) => db.users.find((u) => u.username.toLowerCase() === l.replace("@", "").toLowerCase());
   const tk = todayKey();
@@ -1428,6 +1430,49 @@ function botCommand(
       return p.date === tk && c && (c.type === "day" || c.type === "night") && p.tin > SHIFT_META[c.type].start + 5;
     }).map((p) => `${userById(db, p.userId)?.name || "?"} (${fmtMin(p.tin)})`);
     return late.length ? `Опоздали сегодня: ${late.join(", ")}` : "Опозданий сегодня нет ✅";
+  }
+  if (low.includes("проверить камеры") || low.includes("камеры")) {
+    const newShots = db.camshots.filter((c) => c.status === "new").length;
+    const totalShots = db.camshots.length;
+    return `📸 Камеры: всего снимков ${totalShots}, не проверено ${newShots}. Раздел «Снимки камер».`;
+  }
+  if (low.includes("проверить неделю") || low.includes("неделю")) {
+    const start = mondayKey(tk);
+    const end = addDaysKey(start, 6);
+    const days = rangeKeys(start, end);
+    const gaps = days.filter((d) => !db.schedule.some((s) => s.date === d && (s.type === "day" || s.type === "night")));
+    return gaps.length ? `⚠️ Дней без смен на неделе: ${gaps.length}. Даты: ${gaps.map((d) => fmtDate(d)).join(", ")}` : "✅ Неделя полностью покрыта сменами.";
+  }
+  if (low.includes("проверить месяц") || low.includes("месяц")) {
+    const start = monthStart(tk);
+    const end = monthEnd(tk);
+    const days = rangeKeys(start, end);
+    const gaps = days.filter((d) => !db.schedule.some((s) => s.date === d && (s.type === "day" || s.type === "night")));
+    return gaps.length ? `⚠️ Дней без смен в месяце: ${gaps.length}` : "✅ Месяц полностью покрыт сменами.";
+  }
+  if (low.includes("анализ выработки") || low.includes("выработка")) {
+    const todayProd = db.production.filter((r) => r.date === tk);
+    const total = todayProd.reduce((s, r) => s + r.qty, 0);
+    return `📦 Выработка сегодня: ${total.toFixed(1)} кг (${todayProd.length} записей). За месяц: ${db.production.filter((r) => r.date.startsWith(tk.slice(0, 7))).reduce((s, r) => s + r.qty, 0).toFixed(1)} кг.`;
+  }
+  if (low.includes("анализ часов") || low.includes("часы")) {
+    const todayPunches = db.punches.filter((p) => p.date === tk);
+    const hours = todayPunches.reduce((s, p) => s + (p.tout ? (p.tout - p.tin) : 0), 0) / 60;
+    return `⏱️ Часов сегодня: ${hours.toFixed(1)} (${todayPunches.length} отметок).`;
+  }
+  if (low.includes("статус бота") || low.includes("статус")) {
+    return `🤖 Статус бота:\n• Уверенность: ${db.botBrain.confidence}%\n• Проанализировано фото: ${db.botBrain.photoAnalysisCount}\n• Проанализировано смен: ${db.botBrain.shiftAnalysisCount}\n• Крон-задач: ${db.cronJobs.length}\n• Последнее обучение: ${db.botBrain.lastTraining ? fmtDateFull(db.botBrain.lastTraining.slice(0, 10)) : "никогда"}`;
+  }
+  if (low.includes("обучить бота") || low.includes("обучить")) {
+    return "🧠 Обучение запущено... Используйте раздел «Отдел ИИ» для полного обучения.";
+  }
+  if (low.includes("отчёт бота") || low.includes("отчёт")) {
+    return "📊 Используйте раздел «Отдел ИИ» → «Мозг ИИ» → «Показать отчёт» для полного отчёта.";
+  }
+  if (low.includes("анализ стены") || low.includes("стену")) {
+    const recentPosts = db.posts.filter((p) => Date.now() - new Date(p.ts).getTime() < 7 * 86400000);
+    const totalLikes = recentPosts.reduce((s, p) => s + p.likes.length, 0);
+    return `📝 Стена за 7 дней: ${recentPosts.length} записей, ${totalLikes} реакций.`;
   }
   if (cmd === "заявки") {
     const n = db.requests.filter((r) => r.status === "pending").length;
