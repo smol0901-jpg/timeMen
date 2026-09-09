@@ -10,6 +10,10 @@ import ChatView from "./components/chat";
 import GamesView from "./screens/games";
 import AIView from "./screens/ai";
 import HelpView from "./screens/help";
+import SupportView from "./screens/support";
+import OrdersView from "./screens/orders";
+import ServerMonitor from "./screens/server-monitor";
+import SecurityView from "./screens/security";
 import { I, Logo, Avatar, OnlineDot } from "./components/ui";
 import { MODULES, ModuleId } from "./lib/types";
 
@@ -62,6 +66,10 @@ function Shell() {
       case "dashboard": return <DashboardView />;
       case "employees": return <EmployeesView />;
       case "ai": return <AIView />;
+      case "support": return <SupportView />;
+      case "orders": return <OrdersView />;
+      case "server-monitor": return <ServerMonitor />;
+      case "security": return <SecurityView />;
       default: return <div className="card p-6">Модуль в разработке</div>;
     }
   };
