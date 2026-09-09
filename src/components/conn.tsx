@@ -26,7 +26,7 @@ export function CameraTemplatesCard() {
     if (d.length === 0) setErr("Камеры не найдены. Подключите веб-камеру или разрешите доступ.");
     else setErr("");
   };
-  useEffect(() => { scan(); }, []);
+  // Убрали автоматическое сканирование - камера включается только по кнопке
   useEffect(() => () => { if (vRef.current) stopCamera(vRef.current); }, []);
 
   const startLive = async () => {
