@@ -37,7 +37,47 @@ html, body, #root { height: 100%; }
 body { 
   @apply bg-paper text-ink font-sans antialiased;
   background: linear-gradient(135deg, #edf0f3 0%, #e8ecf1 100%);
+  transition: background-color 0.3s ease, color 0.3s ease;
 }
+
+/* Dark mode */
+.dark body {
+  background: linear-gradient(135deg, #0e1116 0%, #14181f 100%);
+}
+
+.dark {
+  --color-paper: #0e1116;
+  --color-surface: #1b212b;
+  --color-ink: #edf0f3;
+  --color-mute: #8291a8;
+  --color-line: #2c3646;
+}
+
+.dark .card {
+  background: rgba(27, 33, 43, 0.95);
+  border-color: rgba(44, 54, 70, 0.5);
+}
+
+.dark .btn-ghost {
+  background: rgba(27, 33, 43, 0.8);
+  border-color: rgba(44, 54, 70, 0.5);
+  color: #edf0f3;
+}
+
+.dark .input {
+  background: rgba(27, 33, 43, 0.9);
+  border-color: rgba(44, 54, 70, 0.5);
+  color: #edf0f3;
+}
+
+.dark .tbl th {
+  background: rgba(14, 17, 22, 0.5);
+}
+
+.dark .tbl tbody tr:hover {
+  background: rgba(229, 111, 36, 0.1);
+}
+
 ::selection { background: rgba(229, 111, 36, 0.3); }
 
 *::-webkit-scrollbar { width: 10px; height: 10px; }
