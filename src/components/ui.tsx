@@ -58,6 +58,7 @@ const P: Record<string, React.ReactNode> = {
   key: <><circle cx="8" cy="14" r="4.5" /><path d="M11.5 11L20 3M17 6l2.5 2.5M14.5 8.5l2 2" /></>,
   sun: <><circle cx="12" cy="12" r="4" /><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.6 4.6l1.8 1.8M17.6 17.6l1.8 1.8M19.4 4.6l-1.8 1.8M6.4 17.6l-1.8 1.8" /></>,
   moon: <path d="M20 14.5A8 8 0 019.5 4 8 8 0 1020 14.5z" />,
+  monitor: <><rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8M12 17v4" /></>,
   swap: <><path d="M7 8h13l-3.5-3.5" /><path d="M17 16H4l3.5 3.5" /></>,
   zap: <path d="M13 2L4 14h6l-1 8 9-12h-6z" />,
   layers: <><path d="M12 3l9 5-9 5-9-5z" /><path d="M3 13l9 5 9-5M3 17.5l9 5 9-5" /></>,

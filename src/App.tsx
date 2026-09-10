@@ -1,36 +1,56 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, lazy, Suspense } from "react";
 import { StoreProvider, useStore } from "./lib/store";
 import { ToastProvider, I, Logo, Avatar, OnlineDot, Modal } from "./components/ui";
 import { MODULES, ModuleId, NAV_GROUPS } from "./lib/types";
 import { ContextMenu, getQuickActions } from "./components/ContextMenu";
+import { ErrorBoundary } from "./components/ErrorBoundary";
+import { Loading } from "./components/Loading";
+import { ThemeToggle } from "./components/ThemeToggle";
 import Login from "./components/Login";
 import Kiosk from "./components/Kiosk";
-import { PunchView, StatsView, ScheduleView, RequestsView, ProfileView } from "./screens/employee";
-import { DashboardView, EmployeesView, ScheduleEditor } from "./screens/admin";
-import FeedView from "./components/feed";
-import ChatView from "./components/chat";
-import GamesView from "./screens/games";
-import AIView from "./screens/ai";
-import HelpView from "./screens/help";
-import SupportView from "./screens/support";
-import OrdersView from "./screens/orders";
-import ServerMonitor from "./screens/server-monitor";
-import SecurityView from "./screens/security";
-import { RequestsAdmin, ReportsView, RemindersView, PermsView, DataIOView, AuditView, ArchiveView, SettingsView } from "./screens/admin2";
-import AIDepartmentView from "./screens/ai-dept";
-import AIGamesView from "./screens/ai-games";
-import OrgView from "./screens/org";
-import ProductionView from "./screens/production";
-import LiveGamesView from "./screens/gameslive";
-import { CameraView } from "./screens/misc";
+
+// Lazy loading для модулей - улучшение производительности
+const PunchView = lazy(() => import("./screens/employee").then(m => ({ default: m.PunchView })));
+const StatsView = lazy(() => import("./screens/employee").then(m => ({ default: m.StatsView })));
+const ScheduleView = lazy(() => import("./screens/employee").then(m => ({ default: m.ScheduleView })));
+const RequestsView = lazy(() => import("./screens/employee").then(m => ({ default: m.RequestsView })));
+const ProfileView = lazy(() => import("./screens/employee").then(m => ({ default: m.ProfileView })));
+const DashboardView = lazy(() => import("./screens/admin").then(m => ({ default: m.DashboardView })));
+const EmployeesView = lazy(() => import("./screens/admin").then(m => ({ default: m.EmployeesView })));
+const ScheduleEditor = lazy(() => import("./screens/admin").then(m => ({ default: m.ScheduleEditor })));
+const FeedView = lazy(() => import("./components/feed"));
+const ChatView = lazy(() => import("./components/chat"));
+const GamesView = lazy(() => import("./screens/games"));
+const AIView = lazy(() => import("./screens/ai"));
+const HelpView = lazy(() => import("./screens/help"));
+const SupportView = lazy(() => import("./screens/support"));
+const OrdersView = lazy(() => import("./screens/orders"));
+const ServerMonitor = lazy(() => import("./screens/server-monitor"));
+const SecurityView = lazy(() => import("./screens/security"));
+const RequestsAdmin = lazy(() => import("./screens/admin2").then(m => ({ default: m.RequestsAdmin })));
+const ReportsView = lazy(() => import("./screens/admin2").then(m => ({ default: m.ReportsView })));
+const RemindersView = lazy(() => import("./screens/admin2").then(m => ({ default: m.RemindersView })));
+const PermsView = lazy(() => import("./screens/admin2").then(m => ({ default: m.PermsView })));
+const DataIOView = lazy(() => import("./screens/admin2").then(m => ({ default: m.DataIOView })));
+const AuditView = lazy(() => import("./screens/admin2").then(m => ({ default: m.AuditView })));
+const ArchiveView = lazy(() => import("./screens/admin2").then(m => ({ default: m.ArchiveView })));
+const SettingsView = lazy(() => import("./screens/admin2").then(m => ({ default: m.SettingsView })));
+const AIDepartmentView = lazy(() => import("./screens/ai-dept"));
+const AIGamesView = lazy(() => import("./screens/ai-games"));
+const OrgView = lazy(() => import("./screens/org"));
+const ProductionView = lazy(() => import("./screens/production"));
+const LiveGamesView = lazy(() => import("./screens/gameslive"));
+const CameraView = lazy(() => import("./screens/misc").then(m => ({ default: m.CameraView })));
 
 export default function App() {
   return (
-    <StoreProvider>
-      <ToastProvider>
-        <Root />
-      </ToastProvider>
-    </StoreProvider>
+    <ErrorBoundary>
+      <StoreProvider>
+        <ToastProvider>
+          <Root />
+        </ToastProvider>
+      </StoreProvider>
+    </ErrorBoundary>
   );
 }
 
@@ -132,39 +152,47 @@ function Shell() {
   }, [view]);
   
   const Content = () => {
-    switch (view) {
-      case "punch": return <PunchView />;
-      case "stats": return <StatsView />;
-      case "schedule": return me.role === "employee" ? <ScheduleView /> : <ScheduleEditor />;
-      case "requests": return me.role === "employee" ? <RequestsView /> : <RequestsAdmin />;
-      case "production": return <ProductionView />;
-      case "feed": return <FeedView />;
-      case "chat": return <ChatView />;
-      case "games": return <GamesView />;
-      case "gameslive": return <LiveGamesView />;
-      case "profile": return <ProfileView />;
-      case "help": return <HelpView />;
-      case "support": return <SupportView />;
-      case "orders": return <OrdersView />;
-      case "dashboard": return <DashboardView />;
-      case "employees": return <EmployeesView />;
-      case "org": return <OrgView />;
-      case "reports": return <ReportsView />;
-      case "camera": return <CameraView />;
-      case "reminders": return <RemindersView />;
-      case "archive": return <ArchiveView />;
-      case "ai": return <AIView />;
-      case "bot": return <AIView />;
-      case "ai-dept": return <AIDepartmentView />;
-      case "ai-games": return <AIGamesView />;
-      case "server-monitor": return <ServerMonitor />;
-      case "security": return <SecurityView />;
-      case "dataio": return <DataIOView />;
-      case "settings": return <SettingsView />;
-      case "permissions": return <PermsView />;
-      case "audit": return <AuditView />;
-      default: return <PunchView />;
-    }
+    const renderModule = () => {
+      switch (view) {
+        case "punch": return <PunchView />;
+        case "stats": return <StatsView />;
+        case "schedule": return me.role === "employee" ? <ScheduleView /> : <ScheduleEditor />;
+        case "requests": return me.role === "employee" ? <RequestsView /> : <RequestsAdmin />;
+        case "production": return <ProductionView />;
+        case "feed": return <FeedView />;
+        case "chat": return <ChatView />;
+        case "games": return <GamesView />;
+        case "gameslive": return <LiveGamesView />;
+        case "profile": return <ProfileView />;
+        case "help": return <HelpView />;
+        case "support": return <SupportView />;
+        case "orders": return <OrdersView />;
+        case "dashboard": return <DashboardView />;
+        case "employees": return <EmployeesView />;
+        case "org": return <OrgView />;
+        case "reports": return <ReportsView />;
+        case "camera": return <CameraView />;
+        case "reminders": return <RemindersView />;
+        case "archive": return <ArchiveView />;
+        case "ai": return <AIView />;
+        case "bot": return <AIView />;
+        case "ai-dept": return <AIDepartmentView />;
+        case "ai-games": return <AIGamesView />;
+        case "server-monitor": return <ServerMonitor />;
+        case "security": return <SecurityView />;
+        case "dataio": return <DataIOView />;
+        case "settings": return <SettingsView />;
+        case "permissions": return <PermsView />;
+        case "audit": return <AuditView />;
+        default: return <PunchView />;
+      }
+    };
+
+    return (
+      <Suspense fallback={<Loading text={`Загрузка модуля "${currentModule?.label || 'модуль'}"...`} />}>
+        {renderModule()}
+      </Suspense>
+    );
   };
   
   return (
@@ -182,6 +210,9 @@ function Shell() {
         </div>
         
         <OnlineDot />
+        
+        {/* Theme toggle */}
+        <ThemeToggle />
         
         {/* Mobile menu button */}
         <button 
