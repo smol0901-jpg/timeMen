@@ -219,24 +219,27 @@ function Shell() {
                 </div>
                 <div className="space-y-0.5">
                   {favoriteModules.map((m) => (
-                    <div key={m.id} className="flex items-center gap-1">
+                    <div key={m.id} className="relative">
                       <button
                         onClick={() => setView(m.id)}
-                        className={`flex-1 flex items-center gap-2.5 px-3 py-2 rounded-xl text-[13px] font-bold transition-all duration-200 ${
+                        className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] font-bold transition-all duration-200 ${
                           view === m.id 
-                            ? "bg-gradient-to-r from-accent to-accent-deep text-white shadow-lg shadow-accent/30 scale-[1.02]" 
-                            : "text-steel-700 hover:bg-paper/80 hover:scale-[1.01]"
+                            ? "bg-gradient-to-r from-accent to-accent-deep text-white shadow-lg shadow-accent/30" 
+                            : "text-steel-700 hover:bg-paper/80"
                         }`}
                       >
                         <I n={m.icon} size={18} />
-                        <span className="truncate">{m.label}</span>
-                      </button>
-                      <button
-                        onClick={() => toggleFavorite(m.id)}
-                        className="w-9 h-9 rounded-lg grid place-items-center text-accent bg-accent-soft hover:bg-accent-soft/80 transition shadow-sm"
-                        title="Убрать из избранного"
-                      >
-                        <I n="star" size={16} />
+                        <span className="truncate flex-1 text-left">{m.label}</span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleFavorite(m.id);
+                          }}
+                          className="w-8 h-8 rounded-lg grid place-items-center text-yellow-500 hover:text-yellow-600 transition-all"
+                          title="⭐ Убрать из избранного"
+                        >
+                          <I n="star" size={18} />
+                        </button>
                       </button>
                     </div>
                   ))}
@@ -257,28 +260,31 @@ function Shell() {
                     {mods.map((m) => {
                       const isFav = favorites.includes(m.id);
                       return (
-                        <div key={m.id} className="flex items-center gap-1">
+                        <div key={m.id} className="relative group">
                           <button
                             onClick={() => setView(m.id)}
-                            className={`flex-1 flex items-center gap-2.5 px-3 py-2 rounded-xl text-[13px] font-bold transition-all duration-200 ${
+                            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] font-bold transition-all duration-200 ${
                               view === m.id 
-                                ? "bg-gradient-to-r from-accent to-accent-deep text-white shadow-lg shadow-accent/30 scale-[1.02]" 
-                                : "text-steel-700 hover:bg-paper/80 hover:scale-[1.01]"
+                                ? "bg-gradient-to-r from-accent to-accent-deep text-white shadow-lg shadow-accent/30" 
+                                : "text-steel-700 hover:bg-paper/80"
                             }`}
                           >
                             <I n={m.icon} size={18} />
-                            <span className="truncate">{m.label}</span>
-                          </button>
-                          <button
-                            onClick={() => toggleFavorite(m.id)}
-                            className={`w-9 h-9 rounded-lg grid place-items-center transition shadow-sm ${
-                              isFav 
-                                ? "text-accent bg-accent-soft hover:bg-accent-soft/80" 
-                                : "text-steel-400 bg-paper/50 hover:text-accent hover:bg-accent-soft/50"
-                            }`}
-                            title={isFav ? "⭐ Убрать из избранного" : "☆ Добавить в избранное"}
-                          >
-                            <I n="star" size={16} />
+                            <span className="truncate flex-1 text-left">{m.label}</span>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleFavorite(m.id);
+                              }}
+                              className={`w-8 h-8 rounded-lg grid place-items-center transition-all ${
+                                isFav 
+                                  ? "text-yellow-500 hover:text-yellow-600" 
+                                  : "text-steel-300 hover:text-yellow-500 opacity-0 group-hover:opacity-100"
+                              }`}
+                              title={isFav ? "⭐ Убрать из избранного" : "☆ Добавить в избранное"}
+                            >
+                              <I n="star" size={18} />
+                            </button>
                           </button>
                         </div>
                       );
@@ -316,23 +322,34 @@ function Shell() {
                 {favoriteModules.length > 0 && (
                   <div>
                     <div className="flex items-center gap-2 px-3 mb-2">
-                      <I n="star" size={14} className="text-accent" />
-                      <span className="text-[10px] font-extrabold uppercase tracking-wider text-accent-deep">Избранное</span>
+                      <I n="star" size={14} className="text-yellow-500" />
+                      <span className="text-[10px] font-extrabold uppercase tracking-wider text-yellow-600">Избранное</span>
                     </div>
                     <div className="space-y-0.5">
                       {favoriteModules.map((m) => (
-                        <button
-                          key={m.id}
-                          onClick={() => { setView(m.id); setMobileMenuOpen(false); }}
-                          className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] font-bold transition-all ${
-                            view === m.id 
-                              ? "bg-gradient-to-r from-accent to-accent-deep text-white shadow-lg" 
-                              : "text-steel-700 hover:bg-paper/80"
-                          }`}
-                        >
-                          <I n={m.icon} size={18} />
-                          <span className="truncate">{m.label}</span>
-                        </button>
+                        <div key={m.id} className="relative">
+                          <button
+                            onClick={() => { setView(m.id); setMobileMenuOpen(false); }}
+                            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] font-bold transition-all ${
+                              view === m.id 
+                                ? "bg-gradient-to-r from-accent to-accent-deep text-white shadow-lg" 
+                                : "text-steel-700 hover:bg-paper/80"
+                            }`}
+                          >
+                            <I n={m.icon} size={18} />
+                            <span className="truncate flex-1 text-left">{m.label}</span>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleFavorite(m.id);
+                              }}
+                              className="w-8 h-8 rounded-lg grid place-items-center text-yellow-500 hover:text-yellow-600 transition-all"
+                              title="⭐ Убрать из избранного"
+                            >
+                              <I n="star" size={18} />
+                            </button>
+                          </button>
+                        </div>
                       ))}
                     </div>
                   </div>
@@ -348,20 +365,38 @@ function Shell() {
                         {group}
                       </div>
                       <div className="space-y-0.5">
-                        {mods.map((m) => (
-                          <button
-                            key={m.id}
-                            onClick={() => { setView(m.id); setMobileMenuOpen(false); }}
-                            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] font-bold transition-all ${
-                              view === m.id 
-                                ? "bg-gradient-to-r from-accent to-accent-deep text-white shadow-lg" 
-                                : "text-steel-700 hover:bg-paper/80"
-                            }`}
-                          >
-                            <I n={m.icon} size={18} />
-                            <span className="truncate">{m.label}</span>
-                          </button>
-                        ))}
+                        {mods.map((m) => {
+                          const isFav = favorites.includes(m.id);
+                          return (
+                            <div key={m.id} className="relative">
+                              <button
+                                onClick={() => { setView(m.id); setMobileMenuOpen(false); }}
+                                className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] font-bold transition-all ${
+                                  view === m.id 
+                                    ? "bg-gradient-to-r from-accent to-accent-deep text-white shadow-lg" 
+                                    : "text-steel-700 hover:bg-paper/80"
+                                }`}
+                              >
+                                <I n={m.icon} size={18} />
+                                <span className="truncate flex-1 text-left">{m.label}</span>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    toggleFavorite(m.id);
+                                  }}
+                                  className={`w-8 h-8 rounded-lg grid place-items-center transition-all ${
+                                    isFav 
+                                      ? "text-yellow-500 hover:text-yellow-600" 
+                                      : "text-steel-300 hover:text-yellow-500"
+                                  }`}
+                                  title={isFav ? "⭐ Убрать из избранного" : "☆ Добавить в избранное"}
+                                >
+                                  <I n="star" size={18} />
+                                </button>
+                              </button>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   );
