@@ -450,7 +450,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       } catch { if (!cancelled) setOnline(false); }
     };
     sync();
-    const t = setInterval(sync, 1000);
+    const t = setInterval(sync, 5000); // Синхронизация каждые 5 секунд вместо 1
     return () => { cancelled = true; clearInterval(t); };
   }, []);
 
@@ -989,7 +989,18 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setPerm(mod, role, device, val) {
       up((d) => { d.perms[mod][role][device] = val; audit(d, who(), "Права", `${mod}/${role}/${device} = ${val ? "вкл" : "выкл"}`); });
     },
-    setSettings(patch) { up((d) => { Object.assign(d.settings, patch); audit(d, who(), "Настройки", "Изменены настройки"); }); },
+    setSettings(patch) {
+      // Debounce 2 секунды для предотвращения постоянного обновления версии
+      if ((window as any).__settingsTimeout) {
+        clearTimeout((window as any).__settingsTimeout);
+      }
+      (window as any).__settingsTimeout = setTimeout(() => {
+        up((d) => { 
+          Object.assign(d.settings, patch); 
+          audit(d, who(), "Настройки", "Изменены настройки"); 
+        });
+      }, 2000);
+    },
     importAll(nd) {
       if (!nd || ![5, 6, 7].includes(nd.v) || !Array.isArray(nd.users) || !nd.users.some((u) => u.id === "u-root"))
         return "Файл не похож на копию «СменаЛАН»";
