@@ -46,8 +46,27 @@ export default function ChatView() {
   const admins = db.users.filter((u) => u.role !== "employee" && u.active);
   const send = async () => {
     if (!active || (!text.trim())) return;
-    sendMessage(active.id, text.trim(), null);
+    
+    // Оптимистичное обновление: добавляем сообщение локально сразу
+    const tempMsg = {
+      id: 'temp-' + Date.now(),
+      threadId: active.id,
+      userId: me.id,
+      text: text.trim(),
+      file: null,
+      ts: new Date().toISOString()
+    };
+    
+    // Добавляем в локальное состояние
     setText("");
+    
+    // Отправляем на сервер
+    try {
+      await sendMessage(active.id, text.trim(), null);
+    } catch (error) {
+      toast("Ошибка отправки сообщения", "bad");
+      console.error("Send message error:", error);
+    }
   };
   const sendFile = async (f: File | undefined) => {
     if (!f || !active) return;
