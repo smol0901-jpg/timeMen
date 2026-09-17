@@ -17,7 +17,7 @@ const RequestsView = lazy(() => import("./screens/employee").then(m => ({ defaul
 const ProfileView = lazy(() => import("./screens/employee").then(m => ({ default: m.ProfileView })));
 const DashboardView = lazy(() => import("./screens/admin").then(m => ({ default: m.DashboardView })));
 const EmployeesView = lazy(() => import("./screens/admin").then(m => ({ default: m.EmployeesView })));
-const ScheduleEditor = lazy(() => import("./screens/admin").then(m => ({ default: m.ScheduleEditor })));
+const ScheduleEditor = lazy(() => import("./screens/schedule-editor").then(m => ({ default: m.ScheduleEditor })));
 const FeedView = lazy(() => import("./components/feed"));
 const ChatView = lazy(() => import("./components/chat"));
 const GamesView = lazy(() => import("./screens/games"));

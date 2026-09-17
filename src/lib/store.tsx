@@ -454,18 +454,28 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     return () => { cancelled = true; clearInterval(t); };
   }, []);
 
-  // локальное сохранение + отправка
+  // локальное сохранение + отправка с debounce 2 секунды
   useEffect(() => {
     try { localStorage.setItem(DB_KEY, JSON.stringify(db)); } catch { console.warn("Хранилище переполнено"); }
     if (!onlineRef.current) return;
+    
     const t = setTimeout(async () => {
       dirtyRef.current = true;
       const version = verRef.current + 1;
       try {
-        const r = await fetch("./api/db", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data: db, version }) });
-        if (r.ok) { verRef.current = version; dirtyRef.current = false; setServerVer(version); }
+        const r = await fetch("./api/db", { 
+          method: "POST", 
+          headers: { "Content-Type": "application/json" }, 
+          body: JSON.stringify({ data: db, version }) 
+        });
+        if (r.ok) { 
+          verRef.current = version; 
+          dirtyRef.current = false; 
+          setServerVer(version); 
+        }
       } catch { /* офлайн */ }
-    }, 300);
+    }, 2000); // Debounce 2 секунды
+    
     return () => clearTimeout(t);
   }, [db]);
 
@@ -874,7 +884,21 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       const me = meRef.current;
       if (!me) return;
       up((d) => {
-        d.posts.unshift({ id: uid(), userId: me.id, text, image, link, bg, animated, attachments: attachments || [], likes: [], comments: [], ts: new Date().toISOString(), pinned: false });
+        d.posts.unshift({ 
+          id: uid(), 
+          userId: me.id, 
+          text, 
+          image, 
+          link, 
+          bg, 
+          animated, 
+          attachments: attachments || [], 
+          likes: [], 
+          comments: [], 
+          favs: [],
+          ts: new Date().toISOString(), 
+          pinned: false 
+        });
         audit(d, me.name, "Стена", "Новая запись");
       });
     },
